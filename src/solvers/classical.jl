@@ -64,6 +64,7 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
 end
 
 struct RFSolver{T <: Real} <: AbstractClassicalSolver
+    eom :: ClassicalEOM{T}
     n_dof :: Int
 
     RF_lin :: Matrix{Complex{T}}
@@ -86,7 +87,7 @@ function RFSolver(eom :: ClassicalEOM, F :: Frequency)
     RF = factorize(2.0 * ω * eom.K_lin[3] + im * eom.K_lin[2])
     DC = factorize(eom.K_lin[3])
     return RFSolver(
-        eom.n_dof,
+        eom, eom.n_dof,
         im * (RF \ (ω ^ 2 * eom.K_lin[3] + im * ω * eom.K_lin[2] + eom.K_lin[1])), 
         im * (RF \ input),
         -im * (RF \ eom.p_nl),
@@ -196,6 +197,58 @@ function jac!(jac, u, p :: Tuple{RFSolver, Function}, _)
         )
     end
     return jac
+end
+
+function _rhs0!(f, x :: AbstractVector, eom :: ClassicalEOM)
+    mul!(f, eom.K_lin[1], x)
+    for (p, q, θ) in zip(eachcol(eom.p_nl), eachcol(eom.q_nl), eom.θ_nl)
+        axpy!(sin(θ - q' * x), p, f)
+    end
+    return f
+end
+
+function _jac0!(jac, x :: AbstractVector, eom :: ClassicalEOM)
+    jac .= eom.K_lin[1]
+    for (p, q, θ) in zip(eachcol(eom.p_nl), eachcol(eom.q_nl), eom.θ_nl)
+        mul!(jac, p, q', -cos(q' * x - θ), one(eltype(jac)))
+    end
+    return jac
+end
+
+function steady_state(eom :: ClassicalEOM{T}; n_newton :: Integer = 10) where {T}
+    n_newton > 0 && error("Number of Newton iterations must be positive")
+    x = zeros(T, eom.n_dof)
+    y = similar(x)
+    f = similar(x)
+    jac = zeros(T, eom.n_dof, eom.n_dof)
+    for _ in 1 : n_newton
+        _rhs0!(f, x, eom)
+        _jac0!(jac, x, eom)
+        fac = lu!(jac)
+        ldiv!(y, fac, f)
+        x .-= y
+    end
+    return x
+end
+
+steady_state(rf :: RFSolver{T}; n_newton :: Integer = 10) where {T} = [steady_state(rf.eom; n_newton); zeros(T, 3 * rf.n_dof)]
+
+function scattering_matrix(eom :: ClassicalEOM{T}, fs; n_newton :: Integer = 10) where {T}
+    x = steady_state(eom; n_newton)
+    jac = Matrix{T}(undef, length(x), length(x))
+    _jac0!(jac, x, eom)
+    input = zeros(T, eom.n_dof, length(eom.port_i))
+    output = zeros(Complex{T}, length(eom.port_i), eom.n_dof)
+    for (j, (Y, i)) in enumerate(zip(eom.port_Y, eom.port_i))
+        input[i, j] = 2.0 * Y
+        output[j, i] = -1.0im
+    end
+    return [
+        let ω = unitless(uref(eom.f₀), f), K0 = jac, K1 = eom.K_lin[2], K2 = eom.K_lin[3], input = input, output = output
+            -1.0I + (-im * ω) * output * ((K0 + im * ω * K1 + ω ^ 2 * K2) \ input)
+        end
+        for f in fs
+    ]
 end
 
 ODEFunction(rf :: RFSolver) = ODEFunction(rhs!; jac = jac!, jac_prototype = zeros(eltype(rf), ndof(rf), ndof(rf)))
