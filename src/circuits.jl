@@ -10,6 +10,11 @@ end
 
 Circuit() = Circuit(sparse(Matrix{Bool}(undef, 0, 1)), Dict(ground() => 1), Dict{Tuple{Symbol, Symbol}, Int}(), [ground()], Element[])
 
+function Circuit(els)
+    circuit = Circuit()
+    add_elements!(circuit, els)
+end
+
 function add_element!(circuit :: Circuit, el :: Element)
     if haskey(circuit.el_index, id(el))
         error("Element is there")
@@ -37,6 +42,18 @@ function add_elements!(circuit :: Circuit, els)
     return circuit
 end
 
-ndof(circuit :: Circuits) = (length(circuit.nd_index) - 1 + sum(hasfield(typeof(el), :n_aux) ? el.n_aux : 0))
+ndof(circuit :: Circuit) = (length(circuit.nd_index) - 1 + sum((hasfield(typeof(el), :n_aux) ? el.n_aux[] : 0) for el in circuit.els))
 @inline node_index(circuit, node :: Node) = circuit.nd_index[node] - 1
 @inline node_index(circuit, node :: Node, default :: Int) = get(circuit.nd_index, node, default + 1) - 1
+
+# printing
+function Base.show(io :: IO, circuit :: Circuit)
+    println("Elements:")
+    for el in filter(x -> !(x isa Port), circuit.els)
+        println(io, "  ", el)
+    end
+    println("Ports:")
+    for el in filter(x -> (x isa Port), circuit.els)
+        println(io, "  ", el)
+    end
+end

@@ -79,6 +79,18 @@ JoJunction(
     crit_current :: Mayhaps{<: Current} = nothing
 ) = JoJunction(name, nodes, Ref{Mayhaps{Current}}(crit_current))
 
+JoJunction(
+    name :: Symbol,
+    nodes :: Tuple{Node, Node},
+    j_energy :: Energy
+) = JoJunction(name, nodes, Ref{Mayhaps{Current}}(uconvert(u"A", j_energy * 2π / 1.0u"Φ0")))
+
+JoJunction(
+    name :: Symbol,
+    nodes :: Tuple{Node, Node},
+    j_energy :: Frequency
+) = JoJunction(name, nodes, Ref{Mayhaps{Current}}(uconvert(u"A", j_energy * 2π * 1.0u"h" / 1.0u"Φ0")))
+
 SNAIL(
     name :: Symbol,
     nodes :: Tuple{Node, Node},
@@ -86,7 +98,7 @@ SNAIL(
     n :: Mayhaps{Int} = nothing,
     asymmetry :: Mayhaps{<: Real} = nothing,
     flux :: Mayhaps{<: MagneticFlux} = nothing
-) = SNAIL(name, nodes, Ref{Mayhaps{Current}}(crit_current), Ref{Mayhaps{Int}}(n), Ref{Mayhaps{Real}}(asymmetry), ref{Mayhaps{MagneticFlux}}(flux))
+) = SNAIL(name, nodes, Ref{Mayhaps{Current}}(crit_current), Ref{Mayhaps{Int}}(n), Ref{Mayhaps{Real}}(asymmetry), Ref{Mayhaps{MagneticFlux}}(flux))
 
 
 is_lossy(:: Type{T}) where {T <: Element} = hasfield(T, :temperature)
@@ -108,7 +120,7 @@ end
 
 id(el :: T) where {T <: Element} = (Symbol(T), el.name)
 
-nodes(el :: Element{N}) where {N} = (length(el.nodes) == N ? el.nodes : (ground(), el.nodes()...))
+nodes(el :: Element{N}) where {N} = (length(el.nodes) == N ? el.nodes : (ground(), el.nodes...))
 
 # response functions
 response(el :: Capacitor,   f₀ :: Frequency) = unitless(uref(f₀), el.capacitance[])     .* (zeros(2, 2), zeros(2, 2), [1.0 -1.0; -1.0 1.0])
@@ -135,10 +147,10 @@ response(el :: CPWPiece,    f₀ :: Frequency) = let Y = inv(unitless(uref(f₀)
     )
 end
 
-# current
-nl_response(el :: JoJunction,   f₀ :: Frequency) = (unitless(uref(f₀), el.critical_current[]) * [1.0, -1.0], [1.0, -1.0], 0.0)
+# nonlinear elements response
+nl_response(el :: JoJunction,   f₀ :: Frequency) = (unitless(uref(f₀), el.crit_current[]) * [1.0, -1.0], [1.0, -1.0], [0.0])
 nl_response(el :: SNAIL,        f₀ :: Frequency) = (
-    unitless(uref(f₀), el.critical_current[]) * [
+    unitless(uref(f₀), el.crit_current[]) * [
         1.0     el.asymmetry[];
         -1.0    -el.asymmetry[]
     ], [
@@ -146,3 +158,11 @@ nl_response(el :: SNAIL,        f₀ :: Frequency) = (
         -1.0    -inv(el.n[])
     ], [0.0, unitless(uref(f₀), el.flux[]) / el.n[]]
 )
+
+#printing
+Base.show(io :: IO, el :: Capacitor)    = print(io, "Capacitor $(el.name)($(el.nodes[1]), $(el.nodes[2])): C = $(el.capacitance[])")
+Base.show(io :: IO, el :: Inductor)     = print(io, "Inductor $(el.name)($(el.nodes[1]), $(el.nodes[2])): L = $(el.inductance[])")
+Base.show(io :: IO, el :: Port)         = print(io, "Port $(el.name)($(el.nodes[1])): Z = $(el.impedance[]), T = $(el.temperature[])")
+Base.show(io :: IO, el :: CPWPiece)     = print(io, "CPW $(el.name)($(el.nodes[1]), $(el.nodes[2])): Z = $(el.impedance[]), f(λ/2) = $(el.hw_freq[]), # of modes = $(el.n_aux[])")
+Base.show(io :: IO, el :: JoJunction)   = print(io, "JoJu $(el.name)($(el.nodes[1]), $(el.nodes[2])): Iᶜ = $(el.crit_current[])")
+Base.show(io :: IO, el :: SNAIL)        = print(io, "SNAIL $(el.name)($(el.nodes[1]), $(el.nodes[2])): Iᶜ = $(el.crit_current[]), α = $(el.asymmetry[]), n = $(el.n[])")

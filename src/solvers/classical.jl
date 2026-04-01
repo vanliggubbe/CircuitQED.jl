@@ -37,9 +37,9 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
             K_el = response(el, f₀)
             if size(K_el[1], 1) != length(nodes(el))
                 # there are auxiliary dofs
-                append!(idxs, last_dof .+ (1 : el.n_aux))
-                append!(idxs_el, length(nodes(el)) .+ (1 : el.n_aux))
-                last_dof += el.n_aux
+                append!(idxs, last_dof .+ (1 : el.n_aux[]))
+                append!(idxs_el, length(nodes(el)) .+ (1 : el.n_aux[]))
+                last_dof += el.n_aux[]
             end
             for i in 1 : 3
                 K[i][idxs, idxs] .+= K_el[i][idxs_el, idxs_el]
@@ -49,18 +49,18 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
             # currently only non-biased junctions and SNAILs are allowed
             p_el, q_el, θ_el = nl_response(el, f₀)
             n = length(θ_el)
-            p_nl = vcat(p_nl, zeros(n_dof, n))
-            q_nl = vcat(p_nl, zeros(n_dof, n))
+            p_nl = hcat(p_nl, zeros(n_dof, n))
+            q_nl = hcat(q_nl, zeros(n_dof, n))
             p_nl[idxs, end - n + 1 : end] .= p_el[idxs_el, :]
             q_nl[idxs, end - n + 1 : end] .= q_el[idxs_el, :]
             append!(θ_nl, θ_el)
         end
         if el isa Port
-            push!(port_Y, inv(unitless(uref(f₀), el.impedance)))
-            push!(port_i = first(idxs))
+            push!(port_Y, inv(unitless(uref(f₀), el.impedance[])))
+            push!(port_i, first(idxs))
         end
     end
-    return ClassicalEOM(f₀, n_dof, K_lin, p_nl, q_nl, θ_nl, port_Y, port_i)
+    return ClassicalEOM(f₀, n_dof, K, p_nl, q_nl, θ_nl, port_Y, port_i)
 end
 
 struct RFSolver{T <: Real} <: AbstractClassicalSolver
@@ -77,6 +77,25 @@ struct RFSolver{T <: Real} <: AbstractClassicalSolver
     θ_nl :: Vector{T}
 end
 
+function RFSolver(eom :: ClassicalEOM, F :: Frequency)
+    ω = unitless(uref(eom.f₀), 2π * F)
+    input = zeros(eom.n_dof, length(eom.port_i))
+    for (j, (Y, i)) in enumerate(zip(eom.port_Y, eom.port_i))
+        input[i, j] = 2.0 * Y
+    end
+    RF = factorize(2.0 * ω * eom.K_lin[3] + im * eom.K_lin[2])
+    DC = factorize(eom.K_lin[3])
+    return RFSolver(
+        eom.n_dof,
+        im * (RF \ (ω ^ 2 * eom.K_lin[3] + im * ω * eom.K_lin[2] + eom.K_lin[1])), 
+        im * (RF \ input),
+        -im * (RF \ eom.p_nl),
+        DC \ hcat(-eom.K_lin[2], eom.K_lin[1]),
+        -(DC \ eom.p_nl),
+        eom.q_nl, eom.θ_nl
+    )
+end
+
 Base.eltype(:: RFSolver{T}) where {T} = T
 ndof(solver :: RFSolver) = solver.n_dof * 4 
 
@@ -85,19 +104,19 @@ function rhs!(du, u, p :: Tuple{RFSolver, Function}, t)
     
     φ_dc = @view u[1 : solver.n_dof] 
     v_dc = @view u[solver.n_dof .+ (1 : solver.n_dof)]
-    φ_rf = reinterpret(Complex{eltype(u)}, @view u[2 * solver.n_dof + (1 : 2 * solver.n_dof)])
+    φ_rf = reinterpret(Complex{eltype(u)}, @view u[2 * solver.n_dof .+ (1 : 2 * solver.n_dof)])
 
     dφ_dc = @view du[1 : solver.n_dof] 
     dv_dc = @view du[solver.n_dof .+ (1 : solver.n_dof)]
-    dφ_rf = reinterpret(Complex{eltype(du)}, @view du[2 * solver.n_dof + (1 : 2 * solver.n_dof)])
+    dφ_rf = reinterpret(Complex{eltype(du)}, @view du[2 * solver.n_dof .+ (1 : 2 * solver.n_dof)])
 
     # linear dc part
     dφ_dc .= v_dc
     mul!(dv_dc, solver.DC_lin, @view u[1 : (2 * solver.n_dof)])
 
     # linear rf part
-    mul!(dφ_rf, RF_inp, v_i(t))
-    mul!(dφ_rf, RF_lin, φ_rf)
+    mul!(dφ_rf, solver.RF_inp, v_i(t))
+    mul!(dφ_rf, solver.RF_lin, φ_rf, one(eltype(solver.RF_lin)), one(eltype(dφ_rf)))
 
     # nonlinear part
     for (p_rf, p_dc, q, θ) in zip(eachcol(solver.RF_p_nl), eachcol(solver.DC_p_nl), eachcol(solver.q_nl), solver.θ_nl)
@@ -118,41 +137,37 @@ function rhs!(du, u, p :: Tuple{RFSolver, Function}, t)
         sinb, cosb = sincos(b)
 
         # dc part
-        axpy!(besselj0(2 * abs_A) * sinb, p_dc, dv_dc)
+        axpy!(besselj0(2.0 * abs_A) * sinb, p_dc, dv_dc)
         # rf part
-        axpy!(phs_A * besselj1(2 * abs_A) * cosb, p_rf, dφ_rf)
+        axpy!(phs_A * besselj1(2.0 * abs_A) * cosb, p_rf, dφ_rf)
     end
     return du
 end
 
-function jac!(jac, u, p :: Tuple{RFSolver, Function}, t)
+function jac!(jac, u, p :: Tuple{RFSolver, Function}, _)
     solver, _ = p
     fill!(jac, zero(eltype(jac)))
     n = solver.n_dof
 
+    φ_dc = @view u[1 : n] 
+    φ_rf = reinterpret(Complex{eltype(u)}, @view u[2 * n .+ (1 : 2 * n)])
+
     # linear dc part
-    jac[1 : n, n .+ (1 : n)] .= I(n_dof)
-    jac[n .+ (1 : n), 1 : 2 * n] .= solver.DC_lin
+    @simd for i in 1 : n
+        jac[i, n + i] = one(eltype(jac))
+    end
+    jac[n .+ (1 : n), 1 : (2 * n)] .= solver.DC_lin
 
     # linear rf part
-    jac[2 * n .+ (1 : 2 : 2 * n), 2 * n .+ (1 : 2 : 2 * n)] .= reinterpret(Complex{eltype(solver)}, solver.RF_lin)[1 : 2 : end, :]
-    jac[2 * n .+ (2 : 2 : 2 * n), 2 * n .+ (2 : 2 : 2 * n)] .= reinterpret(Complex{eltype(solver)}, solver.RF_lin)[1 : 2 : end, :]
-    jac[2 * n .+ (2 : 2 : 2 * n), 2 * n .+ (1 : 2 : 2 * n)] .= reinterpret(Complex{eltype(solver)}, solver.RF_lin)[2 : 2 : end, :]
-    jac[2 * n .+ (1 : 2 : 2 * n), 2 * n .+ (2 : 2 : 2 * n)] .-= reinterpret(Complex{eltype(solver)}, solver.RF_lin)[2 : 2 : end, :]
+    jac[2 * n .+ (1 : 2 * n), 2 * n .+ (1 : 2 : 2 * n)] .= reinterpret(eltype(solver), solver.RF_lin)
+    jac[2 * n .+ (2 : 2 : 2 * n), 2 * n .+ (2 : 2 : 2 * n)] .= @view jac[2 * n .+ (1 : 2 : 2 * n), 2 * n .+ (1 : 2 : 2 * n)]
+    jac[2 * n .+ (1 : 2 : 2 * n), 2 * n .+ (2 : 2 : 2 * n)] .-= @view jac[2 * n .+ (2 : 2 : 2 * n), 2 * n .+ (1 : 2 : 2 * n)]
 
     # nonlinear part
-    for (i, (p_rf, p_dc, q, θ)) in enumerate(zip(eachcol(solver.RF_p_nl), eachcol(solver.DC_p_nl), eachcol(solver.q_nl), solver.θ_nl))
+    for (p_rf, p_dc, q, θ) in zip(eachcol(solver.RF_p_nl), eachcol(solver.DC_p_nl), eachcol(solver.q_nl), solver.θ_nl)
         A = q' * φ_rf
         b = q' * φ_dc - θ
-        #   exp[ i |A| exp(i φ - i Ω t) + i |A| exp(i Ω t - i φ) + i b] / (2 i)
-        # - exp[-i |A| exp(i φ - i Ω t) - i |A| exp(i Ω t - i φ) - i b] / (2 i)
-        # zero harmonic
-        # J₀(2 * |A|) exp(i b) / (2 i) - J₀(2 * |A|) exp(-ib) / (2 i) = J₀
-        # first harmonic
-        # i exp(i φ) J₁(2 |A|) exp(i b) / (2 i)
-        # - i exp(i φ) J₁(-2 |A|) exp(-i b) / (2 i) = 
-        # exp(i φ) J₁(2 |A|) [exp(i b) + exp(-i b)] / (2 im)
-        
+
         # precalc
         abs_A = abs(A)
         phs_A = iszero(abs_A) ? one(eltype(A)) : (A / abs_A)
@@ -162,24 +177,25 @@ function jac!(jac, u, p :: Tuple{RFSolver, Function}, t)
         j2 = iszero(abs_A) ? one(eltype(abs_A)) : (j1 / abs_A)
 
         # dc part
-        mul!(view(jac[n .+ (1 : n), 1 : n]), p_dc, q', cosb * j0, one(eltype(jac)))
-        mul!(view(jac[n .+ (1 : n), (2 * n) + 1 : 2 : n]), p_dc, q', -sinb * j1 * 2.0 * real(phs_A), one(eltype(jac)))
-        mul!(view(jac[n .+ (1 : n), (2 * n) + 2 : 2 : n]), p_dc, q', -sinb * j1 * 2.0 * imag(phs_A), one(eltype(jac)))
+        mul!(view(jac, n .+ (1 : n), 1 : n), p_dc, q', cosb * j0, one(eltype(jac)))
+        mul!(view(jac, n .+ (1 : n), (2 * n) .+ (1 : 2 : 2 * n)), p_dc, q', -sinb * j1 * 2.0 * real(phs_A), one(eltype(jac)))
+        mul!(view(jac, n .+ (1 : n), (2 * n) .+ (2 : 2 : 2 * n)), p_dc, q', -sinb * j1 * 2.0 * imag(phs_A), one(eltype(jac)))
 
         # rf part
         mul!(
-            reinterpret(Complex{eltype(jac)}, view(jac[2 * n .+ (1 : 2 * n), 1 : n])),
+            reinterpret(Complex{eltype(jac)}, view(jac, 2 * n .+ (1 : 2 * n), 1 : n)),
             p_rf, q', -j1 * phs_A * sinb, one(Complex{eltype(jac)})
         )
         mul!(
-            reinterpret(Complex{eltype(jac)}, view(jac[2 * n .+ (1 : 2 * n), 2 * n .+ (1 : 2 : 2 * n)])),
+            reinterpret(Complex{eltype(jac)}, view(jac, 2 * n .+ (1 : 2 * n), 2 * n .+ (1 : 2 : 2 * n))),
             p_rf, q', cosb * phs_A * (2.0 * real(phs_A) * j0 - phs_A * j2), one(Complex{eltype(jac)})
         )
         mul!(
-            reinterpret(Complex{eltype(jac)}, view(jac[2 * n .+ (1 : 2 * n), 2 * n .+ (2 : 2 : 2 * n)])),
+            reinterpret(Complex{eltype(jac)}, view(jac, 2 * n .+ (1 : 2 * n), 2 * n .+ (2 : 2 : 2 * n))),
             p_rf, q', im * cosb * phs_A * (-2.0im * imag(phs_A) * j0 + phs_A * j2), one(Complex{eltype(jac)})
         )
-        #axpy!(phs_A * besselj1(2 * abs_A) * cosb, p_rf, dφ_rf)
     end
-
+    return jac
 end
+
+ODEFunction(rf :: RFSolver) = ODEFunction(rhs!; jac = jac!, jac_prototype = zeros(eltype(rf), ndof(rf), ndof(rf)))
