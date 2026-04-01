@@ -3,8 +3,18 @@ uuid = "8547be14-5a3c-4068-ba46-105c06cf405f"
 authors = ["Vasilii Vadimov"]
 version = "1.0.0-DEV"
 
+[deps]
+DifferentialEquations = "0c46a032-eb83-5123-abaf-570d42b7fbaa"
+Infinities = "e1ba4f0e-776d-440f-acd9-e1d2e9742647"
+LessUnits = "05e0e9bd-d7a3-4127-a531-85e488807e56"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+SimpleTraits = "699a6c99-e7fa-54fc-8d76-47d257e15c1d"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
+Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
+
 [compat]
-julia = "1.10.10"
+julia = "1.10"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
