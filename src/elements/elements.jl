@@ -151,12 +151,12 @@ end
 nl_response(el :: JoJunction,   f₀ :: Frequency) = (unitless(uref(f₀), el.crit_current[]) * [1.0, -1.0], [1.0, -1.0], [0.0])
 nl_response(el :: SNAIL,        f₀ :: Frequency) = (
     unitless(uref(f₀), el.crit_current[]) * [
-        1.0     el.asymmetry[];
-        -1.0    -el.asymmetry[]
+        1     el.asymmetry[];
+        -1    -el.asymmetry[]
     ], [
-        1.0     inv(el.n[]);
-        -1.0    -inv(el.n[])
-    ], [0.0, unitless(uref(f₀), el.flux[]) / el.n[]]
+        1     inv(el.n[]);
+        -1    -inv(el.n[])
+    ], [unitless(uref(f₀), el.flux[]) / el.n[], 0]
 )
 
 #printing

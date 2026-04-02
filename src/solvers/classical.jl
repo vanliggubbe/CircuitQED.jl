@@ -93,7 +93,7 @@ function RFSolver(eom :: ClassicalEOM, F :: Frequency)
         im * (RF \ (ω ^ 2 * eom.K_lin[3] + im * ω * eom.K_lin[2] + eom.K_lin[1])), 
         im * (RF \ input),
         -im * (RF \ eom.p_nl),
-        DC \ hcat(-eom.K_lin[2], eom.K_lin[1]),
+        DC \ hcat(eom.K_lin[1], -eom.K_lin[2]),
         -(DC \ eom.p_nl),
         eom.q_nl, eom.θ_nl
     )
@@ -280,3 +280,18 @@ end
 scattering_matrix(rf :: RFSolver, fs; n_newton :: Integer = 10) = scattering_matrix(rf.eom, fs; n_newton)
 
 ODEFunction(rf :: RFSolver) = ODEFunction(rhs!; jac = jac!, jac_prototype = zeros(eltype(rf), ndof(rf), ndof(rf)))
+
+function ODEProblem(rf :: RFSolver, v_i :: Function, tspan :: Tuple{Time, Time}, init = nothing; n_newton :: Integer = 10)
+    fun = ODEFunction(rf)
+    x₀ = (init isa Nothing ? steady_state(rf; n_newton) : init)
+    return ODEProblem(
+        fun, x₀, (
+            unitless(uref(rf.eom.f₀), tspan[1]),
+            unitless(uref(rf.eom.f₀), tspan[2])
+        ), (
+            rf, let v_i = v_i, f₀ = rf.eom.f₀;
+                t -> [unitless(uref(f₀), x) for x in v_i(unitof(Time, uref(f₀)) * t)]
+            end
+        )
+    )
+end
