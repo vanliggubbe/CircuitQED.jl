@@ -129,7 +129,7 @@ response(el :: Resistor,    f₀ :: Frequency) = inv(unitless(uref(f₀), el.res
 response(el :: Port,        f₀ :: Frequency) = inv(unitless(uref(f₀), el.impedance[]))  .* (zeros(2, 2), [0.0 0.0; 0.0 1.0], zeros(2, 2))
 response(el :: CPWPiece,    f₀ :: Frequency) = let Y = inv(unitless(uref(f₀), el.impedance[])), ω = unitless(uref(f₀), 2π * el.hw_freq[]), n = el.n_aux[]
     col1 = inv.(1 : n) * sqrt(2.0 * Y / π / ω)
-    col2 = col1 .* ((-1) .^ (1 : n))
+    col2 = -col1 .* ((-1) .^ (1 : n))
     (
         [
             0.0         0.0             0.0             zeros(n)'

@@ -1,11 +1,11 @@
 module CircuitQED
 
 import LinearAlgebra: Diagonal, I, mul!, axpy!, factorize, ldiv!, lu!
-import SparseArrays: SparseMatrixCSC, sparse, findnz
+import SparseArrays: SparseMatrixCSC, sparse, findnz, spzeros
 import Unitful: Capacitance, Inductance, ElectricalResistance, Temperature, Frequency, Current, MagneticFlux, Energy, @u_str, uconvert
 import LessUnits: unitless
 import SpecialFunctions: besselj1, besselj0, besselj
-import OrdinaryDiffEq: ODEFunction
+import SciMLBase: ODEFunction
 
 include("utils.jl")
 

@@ -13,6 +13,8 @@ struct ClassicalEOM{T <: Real, F <: Frequency}
     port_i :: Vector{Int}
 end
 
+ClassicalEOM(circuit :: Circuit, f₀ :: Frequency) = ClassicalEOM(Float64, circuit, f₀)
+
 function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {T <: Real}
     n_dof = ndof(circuit)
     if !isfinite(n_dof)
@@ -96,6 +98,9 @@ function RFSolver(eom :: ClassicalEOM, F :: Frequency)
         eom.q_nl, eom.θ_nl
     )
 end
+
+RFSolver(:: Type{T}, circuit :: Circuit, F :: Frequency, f₀ :: Frequency) where {T <: Real} = RFSolver(ClassicalEOM(T, circuit, f₀), F)
+RFSolver(circuit :: Circuit, F :: Frequency, f₀ :: Frequency) = RFSolver(ClassicalEOM(circuit, f₀), F)
 
 Base.eltype(:: RFSolver{T}) where {T} = T
 ndof(solver :: RFSolver) = solver.n_dof * 4 
@@ -215,8 +220,15 @@ function _jac0!(jac, x :: AbstractVector, eom :: ClassicalEOM)
     return jac
 end
 
+"""
+    steady_state(eom :: ClassicalEOM; n_newton :: Integer = 10)
+
+Finds stationary solution of classical equations of motion `eom` using Newton method. Optional parameter `n_newton` control number of iterations.
+"""
 function steady_state(eom :: ClassicalEOM{T}; n_newton :: Integer = 10) where {T}
-    n_newton > 0 && error("Number of Newton iterations must be positive")
+    if n_newton <= 0
+        error("Number of Newton iterations must be positive")
+    end
     x = zeros(T, eom.n_dof)
     y = similar(x)
     f = similar(x)
@@ -231,24 +243,40 @@ function steady_state(eom :: ClassicalEOM{T}; n_newton :: Integer = 10) where {T
     return x
 end
 
+"""
+    steady_state(eom :: ClassicalEOM; n_newton :: Integer = 10)
+
+Finds stationary solution of classical equations of motion `rf` using Newton method.
+"""
 steady_state(rf :: RFSolver{T}; n_newton :: Integer = 10) where {T} = [steady_state(rf.eom; n_newton); zeros(T, 3 * rf.n_dof)]
 
+"""
+    scattering_matrix(eom :: ClassicalEOM, fs; n_newton :: Integer = 10)
+
+For each frequency in `fs`, returns scattering matrix between all ports, assuming the circuit to be in the stationary state.
+"""
 function scattering_matrix(eom :: ClassicalEOM{T}, fs; n_newton :: Integer = 10) where {T}
+    # find stationary state
     x = steady_state(eom; n_newton)
     jac = Matrix{T}(undef, length(x), length(x))
+    # linearize potential energy around it
     _jac0!(jac, x, eom)
-    input = zeros(T, eom.n_dof, length(eom.port_i))
-    output = zeros(Complex{T}, length(eom.port_i), eom.n_dof)
+
+    # construct input and output matrices
+    input = spzeros(T, eom.n_dof, length(eom.port_i))
+    output = spzeros(T, eom.n_dof, length(eom.port_i))
     for (j, (Y, i)) in enumerate(zip(eom.port_Y, eom.port_i))
-        input[i, j] = 2.0 * Y
-        output[j, i] = -1.0im
+        input[i, j] = -2.0 * Y
+        output[i, j] = one(eltype(T))
     end
     return [
-        let ω = unitless(uref(eom.f₀), f), K0 = jac, K1 = eom.K_lin[2], K2 = eom.K_lin[3], input = input, output = output
-            -1.0I + (-im * ω) * output * ((K0 + im * ω * K1 + ω ^ 2 * K2) \ input)
+        let ω = unitless(uref(eom.f₀), 2π * f), K0 = jac, K1 = eom.K_lin[2], K2 = eom.K_lin[3], input = input, output = output
+            -1.0I + (-im * ω) * (output' * ((K0 + im * ω * K1 + ω ^ 2 * K2) \ input))
         end
         for f in fs
     ]
 end
+
+scattering_matrix(rf :: RFSolver, fs; n_newton :: Integer = 10) = scattering_matrix(rf.eom, fs; n_newton)
 
 ODEFunction(rf :: RFSolver) = ODEFunction(rhs!; jac = jac!, jac_prototype = zeros(eltype(rf), ndof(rf), ndof(rf)))
