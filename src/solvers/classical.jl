@@ -2,12 +2,11 @@ struct ClassicalEOM{T <: Real, F <: Frequency}
     f₀ :: F
     n_dof :: Int
     K_lin :: Tuple{Matrix{T}, Matrix{T}, Matrix{T}}
-    # current is -K₂ ẍ - K₁ ẋ + K₀ x
 
     p_nl :: Matrix{T}
     q_nl :: Matrix{T}
     θ_nl :: Vector{T}
-    # current is p_nl * sin(q_nl' * x - θ_nl)
+    # current is -K₂ ẍ - K₁ ẋ + K₀ x - p_nl * sin(q_nl' * x - θ_nl)
 
     port_Y :: Vector{T}
     port_i :: Vector{Int}
@@ -105,6 +104,11 @@ RFSolver(circuit :: Circuit, F :: Frequency, f₀ :: Frequency) = RFSolver(Class
 Base.eltype(:: RFSolver{T}) where {T} = T
 ndof(solver :: RFSolver) = solver.n_dof * 4 
 
+# dc current is -K₂ ẍ - K₁ ẋ + K₀ x - p_nl * sin(q_nl' * x - θ_nl)
+# ẋ = v
+# -K₂ v̇ - K₁ v + K₀ x - p_nl sin(q_nl' * x - θ_nl) = 0
+# v̇ = -(K₂ \ K₁) * v + (K₂ \ K₀) x - (K₂ \ p_nl) sin(q_nl' * x - θ_nl)
+# rf current i K' ẋ + K x - p_nl * sin(q_nl' * x - θ_nl) + 2 in
 function rhs!(du, u, p :: Tuple{RFSolver, Function}, t)
     solver, v_i = p
     
