@@ -154,8 +154,8 @@ nl_response(el :: SNAIL,        f₀ :: Frequency) = (
         1     el.asymmetry[];
         -1    -el.asymmetry[]
     ], [
-        1     inv(el.n[]);
-        -1    -inv(el.n[])
+        inv(el.n[])     1;
+        -inv(el.n[])    -1;
     ], [unitless(uref(f₀), el.flux[]) / el.n[], 0]
 )
 
