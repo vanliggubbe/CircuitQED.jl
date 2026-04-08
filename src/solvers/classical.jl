@@ -66,35 +66,55 @@ end
 
 struct RFSolver{T <: Real} <: AbstractClassicalSolver
     eom :: ClassicalEOM{T}
-    n_dof :: Int
+    ω :: T
+    n_fourier :: Int
 
-    RF_lin :: Matrix{Complex{T}}
-    RF_inp :: Matrix{Complex{T}}
-    RF_p_nl :: Matrix{Complex{T}}
+    #RF_lin :: Matrix{Complex{T}}
+    #RF_inp :: Matrix{Complex{T}}
+    #RF_p_nl :: Matrix{Complex{T}}
+    RF_lin  :: Array{Complex{T}, 3}
+    RF_inp  :: Array{Complex{T}, 3}
+    RF_p_nl :: Array{Complex{T}, 3}
 
-    DC_lin :: Matrix{T}
+    DC_lin  :: Matrix{T}
     DC_p_nl :: Matrix{T}
-
-    q_nl :: Matrix{T}
-    θ_nl :: Vector{T}
 end
 
-function RFSolver(eom :: ClassicalEOM, F :: Frequency)
+function Base.getproperty(rf :: RFSolver, name :: Symbol)
+    if name == :q_nl
+        return rf.eom.q_nl
+    elseif name == :θ_nl
+        return rf.eom.θ_nl
+    elseif name == :n_dof
+        return rf.eom.n_dof
+    else
+        return getfield(rf, name)
+    end
+end
+
+function RFSolver(eom :: ClassicalEOM{T}, F :: Frequency, n_fourier :: Int = 1) where {T}
+    @argcheck n_fourier > 0
+    @argcheck F > zero(typeof(F))
     ω = unitless(uref(eom.f₀), 2π * F)
     input = zeros(eom.n_dof, length(eom.port_i))
     for (j, (Y, i)) in enumerate(zip(eom.port_Y, eom.port_i))
         input[i, j] = 2.0 * Y
     end
-    RF = factorize(2.0 * ω * eom.K_lin[3] + im * eom.K_lin[2])
+    RF_lin = Array{Complex{T}}(undef, eom.n_dof, eom.n_dof, n_fourier)
+    RF_inp = Array{Complex{T}}(undef, eom.n_dof, size(input, 2), n_fourier)
+    RF_pnl = Array{Complex{T}}(undef, eom.n_dof, size(eom.p_nl, 2), n_fourier)
+    for n in 1 : n_fourier
+        RF = factorize(2.0 * (n * ω) * eom.K_lin[3] + im * eom.K_lin[2])
+        RF_lin[:, :, n] .= im * (RF \ ((n * ω) ^ 2 * im * n * ω * eom.K_lin[2] + eom.K_lin[1]))
+        RF_inp[:, :, n] .= im * (RF \ input)
+        RF_pnl[:, :, n] .= -im * (RF \ eom.p_nl)
+    end
     DC = factorize(eom.K_lin[3])
     return RFSolver(
-        eom, eom.n_dof,
-        im * (RF \ (ω ^ 2 * eom.K_lin[3] + im * ω * eom.K_lin[2] + eom.K_lin[1])), 
-        im * (RF \ input),
-        -im * (RF \ eom.p_nl),
+        eom, ω, n_fourier,
+        RF_lin, RF_inp, RF_pnl,
         DC \ hcat(eom.K_lin[1], -eom.K_lin[2]),
-        -(DC \ eom.p_nl),
-        eom.q_nl, eom.θ_nl
+        -(DC \ eom.p_nl)
     )
 end
 
@@ -102,7 +122,7 @@ RFSolver(:: Type{T}, circuit :: Circuit, F :: Frequency, f₀ :: Frequency) wher
 RFSolver(circuit :: Circuit, F :: Frequency, f₀ :: Frequency) = RFSolver(ClassicalEOM(circuit, f₀), F)
 
 Base.eltype(:: RFSolver{T}) where {T} = T
-ndof(solver :: RFSolver) = solver.n_dof * 4 
+ndof(solver :: RFSolver) = solver.n_dof * (solver.n_fourier + 1) * 2
 
 # dc current is -K₂ ẍ - K₁ ẋ + K₀ x - p_nl * sin(q_nl' * x - θ_nl)
 # ẋ = v
@@ -114,42 +134,49 @@ function rhs!(du, u, p :: Tuple{RFSolver, Function}, t)
     
     φ_dc = @view u[1 : solver.n_dof] 
     v_dc = @view u[solver.n_dof .+ (1 : solver.n_dof)]
-    φ_rf = reinterpret(Complex{eltype(u)}, @view u[2 * solver.n_dof .+ (1 : 2 * solver.n_dof)])
+    #φ_rf = reinterpret(Complex{eltype(u)}, @view u[2 * solver.n_dof .+ (1 : 2 * solver.n_dof)])
 
     dφ_dc = @view du[1 : solver.n_dof] 
     dv_dc = @view du[solver.n_dof .+ (1 : solver.n_dof)]
-    dφ_rf = reinterpret(Complex{eltype(du)}, @view du[2 * solver.n_dof .+ (1 : 2 * solver.n_dof)])
+    #dφ_rf = reinterpret(Complex{eltype(du)}, @view du[2 * solver.n_dof .+ (1 : 2 * solver.n_dof)])
 
     # linear dc part
     dφ_dc .= v_dc
     mul!(dv_dc, solver.DC_lin, @view u[1 : (2 * solver.n_dof)])
 
     # linear rf part
-    mul!(dφ_rf, solver.RF_inp, v_i(t))
-    mul!(dφ_rf, solver.RF_lin, φ_rf, one(eltype(solver.RF_lin)), one(eltype(dφ_rf)))
+    for n in 1 : solver.n_fourier
+        # n-th Fourier harmonic
+        φ_rf = reinterpret(Complex{eltype(u)}, @view u[2 * solver.n_dof * n .+ (1 : 2 * solver.n_dof)])
+        dφ_rf = reinterpret(Complex{eltype(du)}, @view du[2 * solver.n_dof * n .+ (1 : 2 * solver.n_dof)])
+        if n == 1
+            # we have quasimonochromatic drive
+            mul!(dφ_rf, (@view solver.RF_inp[:, :, n]), v_i(t))
+            mul!(dφ_rf, (@view solver.RF_lin[:, :, n]), φ_rf, one(eltype(solver.RF_lin)), one(eltype(dφ_rf)))
+        else
+            mul!(dφ_rf, (@view solver.RF_lin[:, :, n]), φ_rf)
+        end
+    end
 
     # nonlinear part
-    for (p_rf, p_dc, q, θ) in zip(eachcol(solver.RF_p_nl), eachcol(solver.DC_p_nl), eachcol(solver.q_nl), solver.θ_nl)
-        A = q' * φ_rf
-        b = q' * φ_dc - θ
-        #   exp[ i |A| exp(i φ - i Ω t) + i |A| exp(i Ω t - i φ) + i b] / (2 i)
-        # - exp[-i |A| exp(i φ - i Ω t) - i |A| exp(i Ω t - i φ) - i b] / (2 i)
-        # zero harmonic
-        # J₀(2 * |A|) exp(i b) / (2 i) - J₀(2 * |A|) exp(-ib) / (2 i) = J₀
-        # first harmonic
-        # i exp(i φ) J₁(2 |A|) exp(i b) / (2 i)
-        # - i exp(i φ) J₁(-2 |A|) exp(-i b) / (2 i) = 
-        # exp(i φ) J₁(2 |A|) [exp(i b) + exp(-i b)] / (2 im)
-        
-        # precalc
-        abs_A = abs(A)
-        phs_A = iszero(abs_A) ? one(eltype(A)) : (A / abs_A)
-        sinb, cosb = sincos(b)
-
+    A = Vector{Complex{eltype(solver)}}(undef, 2 * solver.n_fourier + 1)
+    for (i, (q, θ)) in enumerate(zip(eachcol(solver.q_nl), solver.θ_nl))
+        # rf harmonics
+        for n in 1 : solver.n_fourier
+            A[1 + solver.n_fourier + n] = q' * reinterpret(Complex{eltype(u)}, @view u[2 * solver.n_dof * n .+ (1 : 2 * solver.n_dof)])
+            A[1 + solver.n_fourier - n] = conj(A[1 + solver.n_fourier + n])
+        end
+        # dc component
+        A[1 + solver.n_fourier] = q' * φ_dc - θ
+        m, B = inf_toeplitz_fun(-solver.n_fourier, A, sin)
+         
         # dc part
-        axpy!(besselj0(2.0 * abs_A) * sinb, p_dc, dv_dc)
+        axpy!(real(B[-m + 1]), (@view solver.DC_p_nl[:, i]), dv_dc)
         # rf part
-        axpy!(phs_A * besselj1(2.0 * abs_A) * cosb, p_rf, dφ_rf)
+        for n in 1 : solver.n_fourier
+            dφ_rf = reinterpret(Complex{eltype(du)}, @view du[2 * solver.n_dof * n .+ (1 : 2 * solver.n_dof)])
+            axpy!(B[-m + 1 + n], (@view solver.RF_p_nl[:, i, n]), dφ_rf)
+        end
     end
     return du
 end
@@ -160,7 +187,6 @@ function jac!(jac, u, p :: Tuple{RFSolver, Function}, _)
     n = solver.n_dof
 
     φ_dc = @view u[1 : n] 
-    φ_rf = reinterpret(Complex{eltype(u)}, @view u[2 * n .+ (1 : 2 * n)])
 
     # linear dc part
     @simd for i in 1 : n
@@ -169,41 +195,52 @@ function jac!(jac, u, p :: Tuple{RFSolver, Function}, _)
     jac[n .+ (1 : n), 1 : (2 * n)] .= solver.DC_lin
 
     # linear rf part
-    jac[2 * n .+ (1 : 2 * n), 2 * n .+ (1 : 2 : 2 * n)] .= reinterpret(eltype(solver), solver.RF_lin)
-    jac[2 * n .+ (2 : 2 : 2 * n), 2 * n .+ (2 : 2 : 2 * n)] .= @view jac[2 * n .+ (1 : 2 : 2 * n), 2 * n .+ (1 : 2 : 2 * n)]
-    jac[2 * n .+ (1 : 2 : 2 * n), 2 * n .+ (2 : 2 : 2 * n)] .-= @view jac[2 * n .+ (2 : 2 : 2 * n), 2 * n .+ (1 : 2 : 2 * n)]
+    for m in 1 : solver.n_fourier
+        jac[2 * n * m .+ (1 : 2 * n), 2 * n * m .+ (1 : 2 : 2 * n)] .= reinterpret(eltype(solver), @view solver.RF_lin[:, :, m])
+        jac[2 * n * m .+ (2 : 2 : 2 * n), 2 * n * m .+ (2 : 2 : 2 * n)] .= @view jac[2 * n * m .+ (1 : 2 : 2 * n), 2 * n * m .+ (1 : 2 : 2 * n)]
+        jac[2 * n * m .+ (1 : 2 : 2 * n), 2 * n * m .+ (2 : 2 : 2 * n)] .-= @view jac[2 * n * m .+ (2 : 2 : 2 * n), 2 * n * m .+ (1 : 2 : 2 * n)]
+    end
 
     # nonlinear part
-    for (p_rf, p_dc, q, θ) in zip(eachcol(solver.RF_p_nl), eachcol(solver.DC_p_nl), eachcol(solver.q_nl), solver.θ_nl)
-        A = q' * φ_rf
-        b = q' * φ_dc - θ
+    A = Vector{Complex{eltype(solver)}}(undef, 2 * solver.n_fourier + 1)
+    for (i, (q, θ)) in enumerate(zip(eachcol(solver.q_nl), solver.θ_nl))
+        # rf components
+        for m in 1 : solver.n_fourier
+            A[1 + solver.n_fourier + m] = q' * reinterpret(Complex{eltype(u)}, @view u[2 * solver.n_dof * m .+ (1 : 2 * solver.n_dof)])
+            A[1 + solver.n_fourier - m] = conj(A[1 + solver.n_fourier + m])
+        end
+        # dc component
+        A[1 + solver.n_fourier] = q' * φ_dc - θ
+        l, B = inf_toeplitz_fun(-solver.n_fourier, A, cos)
 
-        # precalc
-        abs_A = abs(A)
-        phs_A = iszero(abs_A) ? one(eltype(A)) : (A / abs_A)
-        sinb, cosb = sincos(b)
-        j0 = besselj0(2 * abs_A)
-        j1 = besselj1(2 * abs_A)
-        j2 = iszero(abs_A) ? one(eltype(abs_A)) : (j1 / abs_A)
+        p_dc = @view solver.DC_p_nl[:, i]
+        p_rf = @view solver.RF_p_nl[:, i, :]
 
         # dc part
-        mul!(view(jac, n .+ (1 : n), 1 : n), p_dc, q', cosb * j0, one(eltype(jac)))
-        mul!(view(jac, n .+ (1 : n), (2 * n) .+ (1 : 2 : 2 * n)), p_dc, q', -sinb * j1 * 2.0 * real(phs_A), one(eltype(jac)))
-        mul!(view(jac, n .+ (1 : n), (2 * n) .+ (2 : 2 : 2 * n)), p_dc, q', -sinb * j1 * 2.0 * imag(phs_A), one(eltype(jac)))
+        mul!(view(jac, n .+ (1 : n), 1 : n), p_dc, q', real(B[-l + 1]), one(eltype(jac)))
+        for m in 1 : solver.n_fourier
+            mul!(view(jac, n .+ (1 : n), (2 * n * m) .+ (1 : 2 : 2 * n)), p_dc, q', real(B[-l + 1 + m] + B[-l + 1 - m]), one(eltype(jac)))
+            mul!(view(jac, n .+ (1 : n), (2 * n * m) .+ (2 : 2 : 2 * n)), p_dc, q', real(-im * B[-l + 1 + m] + im * B[-l + 1 - m]), one(eltype(jac)))
+        end
 
         # rf part
-        mul!(
-            reinterpret(Complex{eltype(jac)}, view(jac, 2 * n .+ (1 : 2 * n), 1 : n)),
-            p_rf, q', -j1 * phs_A * sinb, one(Complex{eltype(jac)})
-        )
-        mul!(
-            reinterpret(Complex{eltype(jac)}, view(jac, 2 * n .+ (1 : 2 * n), 2 * n .+ (1 : 2 : 2 * n))),
-            p_rf, q', cosb * phs_A * (2.0 * real(phs_A) * j0 - phs_A * j2), one(Complex{eltype(jac)})
-        )
-        mul!(
-            reinterpret(Complex{eltype(jac)}, view(jac, 2 * n .+ (1 : 2 * n), 2 * n .+ (2 : 2 : 2 * n))),
-            p_rf, q', im * cosb * phs_A * (-2.0im * imag(phs_A) * j0 + phs_A * j2), one(Complex{eltype(jac)})
-        )
+        for m in 1 : solver.n_fourier
+            # derivative wrt dc
+            mul!(
+                reinterpret(Complex{eltype(jac)}, view(jac, 2 * n * m .+ (1 : 2 * n), 1 : n)),
+                (@view p_rf[:, m]), q', B[-l + 1 + m], one(Complex{eltype(jac)})
+            )
+            for m′ in 1 : solver.n_fourier
+                mul!(
+                    reinterpret(Complex{eltype(jac)}, view(jac, 2 * n * m .+ (1 : 2 * n), 2 * n * m′ .+ (1 : 2 : 2 * n))),
+                    (@view p_rf[:, m]), q', B[-l + 1 + m + m′] + B[-l + 1 + m - m′], one(Complex{eltype(jac)})
+                )
+                mul!(
+                    reinterpret(Complex{eltype(jac)}, view(jac, 2 * n * m .+ (1 : 2 * n), 2 * n * m′ .+ (2 : 2 : 2 * n))),
+                    (@view p_rf[:, m]), q', -im * B[-l + 1 + m + m′] + im * B[-l + 1 + m - m′], one(Complex{eltype(jac)})
+                )
+            end
+        end
     end
     return jac
 end
