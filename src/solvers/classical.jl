@@ -231,13 +231,15 @@ function jac!(jac, u, p :: Tuple{RFSolver, Function}, _)
                 (@view p_rf[:, m]), q', B[-l + 1 + m], one(Complex{eltype(jac)})
             )
             for m′ in 1 : solver.n_fourier
+                B₊ = (1 <= (-l + 1 + m + m′) <= length(B)) ? B[-l + 1 + m + m′] : zero(eltype(B))
+                B₋ = (1 <= (-l + 1 + m - m′) <= length(B)) ? B[-l + 1 + m - m′] : zero(eltype(B))
                 mul!(
                     reinterpret(Complex{eltype(jac)}, view(jac, 2 * n * m .+ (1 : 2 * n), 2 * n * m′ .+ (1 : 2 : 2 * n))),
-                    (@view p_rf[:, m]), q', B[-l + 1 + m + m′] + B[-l + 1 + m - m′], one(Complex{eltype(jac)})
+                    (@view p_rf[:, m]), q', B₊ + B₋, one(Complex{eltype(jac)})
                 )
                 mul!(
                     reinterpret(Complex{eltype(jac)}, view(jac, 2 * n * m .+ (1 : 2 * n), 2 * n * m′ .+ (2 : 2 : 2 * n))),
-                    (@view p_rf[:, m]), q', -im * B[-l + 1 + m + m′] + im * B[-l + 1 + m - m′], one(Complex{eltype(jac)})
+                    (@view p_rf[:, m]), q', -im * B₊ + im * B₋, one(Complex{eltype(jac)})
                 )
             end
         end
@@ -289,7 +291,7 @@ end
 
 Finds stationary solution of classical equations of motion `rf` using Newton method.
 """
-steady_state(rf :: RFSolver{T}; n_newton :: Integer = 10) where {T} = [steady_state(rf.eom; n_newton); zeros(T, 3 * rf.n_dof)]
+steady_state(rf :: RFSolver{T}; n_newton :: Integer = 10) where {T} = [steady_state(rf.eom; n_newton); zeros(T, ndof(rf) - rf.n_dof)]
 
 """
     scattering_matrix(eom :: ClassicalEOM, fs; n_newton :: Integer = 10)
@@ -312,7 +314,7 @@ function scattering_matrix(eom :: ClassicalEOM{T}, fs; n_newton :: Integer = 10)
     end
     return [
         let ω = unitless(uref(eom.f₀), 2π * f), K0 = jac, K1 = eom.K_lin[2], K2 = eom.K_lin[3], input = input, output = output
-            -1.0I + (-im * ω) * (output' * ((K0 + im * ω * K1 + ω ^ 2 * K2) \ input))
+            Diagonal(sqrt.(eom.port_Y)) * (-1.0I + (-im * ω) * (output' * ((K0 + im * ω * K1 + ω ^ 2 * K2) \ input))) * Diagonal(sqrt.(inv.(eom.port_Y)))
         end
         for f in fs
     ]
