@@ -19,7 +19,7 @@ function inf_toeplitz_fun(left :: Int, coeff :: Vector{T}, fun :: Function; atol
     end
 
     N = 4
-    while N < max(abs(left), abs(right))
+    while N < max(abs(left) + 1, abs(right) + 1)
         N *= 2
     end
 
