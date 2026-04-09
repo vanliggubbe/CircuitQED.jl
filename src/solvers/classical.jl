@@ -105,7 +105,7 @@ function RFSolver(eom :: ClassicalEOM{T}, F :: Frequency, n_fourier :: Int = 1) 
     RF_pnl = Array{Complex{T}}(undef, eom.n_dof, size(eom.p_nl, 2), n_fourier)
     for n in 1 : n_fourier
         RF = factorize(2.0 * (n * ω) * eom.K_lin[3] + im * eom.K_lin[2])
-        RF_lin[:, :, n] .= im * (RF \ ((n * ω) ^ 2 * im * n * ω * eom.K_lin[2] + eom.K_lin[1]))
+        RF_lin[:, :, n] .= im * (RF \ ((n * ω) ^ 2 * eom.K_lin[3] + im * n * ω * eom.K_lin[2] + eom.K_lin[1]))
         RF_inp[:, :, n] .= im * (RF \ input)
         RF_pnl[:, :, n] .= -im * (RF \ eom.p_nl)
     end
