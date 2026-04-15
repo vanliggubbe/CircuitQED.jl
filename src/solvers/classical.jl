@@ -67,6 +67,7 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
             #push!(port_Y, inv(unitless(uref(f₀), el.impedance[])))
             #push!(port_i, first(idxs))
             input[first(idxs), i_port] = inv(unitless(uref(f₀), el.impedance[]))
+            i_port += 1
         end
     end
     return ClassicalEOM(f₀, n_dof, K, K[3] \ hcat(K[1], -K[2]), -2.0 * K[3] \ input, -K[3] \ p_nl, p_nl, q_nl, θ_nl, input)
@@ -146,7 +147,7 @@ function steady_state(eom :: ClassicalEOM{T}; n_newton :: Integer = 10) where {T
         ldiv!(y, fac, f)
         x .-= y
     end
-    return [x; zeros(x)]
+    return [x; zero(x)]
 end
 
 """
@@ -157,7 +158,7 @@ For each frequency in `fs`, returns scattering matrix between all ports, assumin
 function scattering_matrix(eom :: ClassicalEOM{T}, fs; n_newton :: Integer = 10) where {T}
     # find stationary state
     x = steady_state(eom; n_newton)
-    jac = Matrix{T}(undef, length(x), length(x))
+    jac = Matrix{T}(undef, length(x) ÷ 2, length(x) ÷ 2)
     # linearize potential energy around it
     _jac0!(jac, (@view x[1 : length(x) ÷ 2]), eom)
 
