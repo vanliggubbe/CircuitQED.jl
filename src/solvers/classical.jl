@@ -176,7 +176,7 @@ ODEFunction(eom :: ClassicalEOM) = ODEFunction(rhs!; jac = jac!, jac_prototype =
 function ODEProblem(eom :: ClassicalEOM, v_i :: Function, tspan :: Tuple{Time, Time}, init = nothing; n_newton :: Integer = 10)
     fun = ODEFunction(eom)
     x₀ = (init isa Nothing ? steady_state(eom; n_newton) : init)
-    return ODEProblem(
+    return ODEProblem{true}(
         fun, x₀, (
             unitless(uref(eom.f₀), tspan[1]),
             unitless(uref(eom.f₀), tspan[2])

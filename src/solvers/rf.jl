@@ -191,7 +191,7 @@ ODEFunction(rf :: RFSolver) = ODEFunction(rhs!; jac = jac!, jac_prototype = zero
 function ODEProblem(rf :: RFSolver, v_i :: Function, tspan :: Tuple{Time, Time}, init = nothing; n_newton :: Integer = 10)
     fun = ODEFunction(rf)
     x₀ = (init isa Nothing ? steady_state(rf; n_newton) : init)
-    return ODEProblem(
+    return ODEProblem{true}(
         fun, x₀, (
             unitless(uref(rf.eom.f₀), tspan[1]),
             unitless(uref(rf.eom.f₀), tspan[2])
