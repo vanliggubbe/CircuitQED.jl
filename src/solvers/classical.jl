@@ -70,7 +70,7 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
             i_port += 1
         end
     end
-    return ClassicalEOM(f₀, n_dof, K, K[3] \ hcat(K[1], -K[2]), -2.0 * K[3] \ input, -K[3] \ p_nl, p_nl, q_nl, θ_nl, input)
+    return ClassicalEOM(f₀, n_dof, K, K[3] \ hcat(K[1], -K[2]), -2.0 * (K[3] \ input), -K[3] \ p_nl, p_nl, q_nl, θ_nl, input)
 end
 
 Base.eltype(:: ClassicalEOM{T}) where {T} = T

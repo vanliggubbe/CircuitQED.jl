@@ -59,6 +59,13 @@ Capacitor(name :: Symbol, nodes :: Tuple{Node, Node}, capacitance :: Mayhaps{<: 
 
 Inductor(name :: Symbol, nodes :: Tuple{Node, Node}, inductance :: Mayhaps{<: Inductance} = nothing) = Inductor(name, nodes, Ref{Mayhaps{Inductance}}(inductance))
 
+Resistor(
+    name :: Symbol,
+    nodes :: Tuple{Node, Node},
+    resistance :: Mayhaps{<: ElectricalResistance} = nothing,
+    temperature :: Mayhaps{<: Temperature} = nothing
+) = Resistor(name, nodes, Ref{Mayhaps{ElectricalResistance}}(resistance), Ref{Mayhaps{Temperature}}(temperature))
+
 Port(
     name :: Symbol,
     nodes :: Tuple{Node},
