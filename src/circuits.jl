@@ -16,9 +16,7 @@ function Circuit(els)
 end
 
 function add_element!(circuit :: Circuit, el :: Element)
-    if haskey(circuit.el_index, id(el))
-        error("Element is there")
-    end
+    @argcheck !haskey(circuit.el_index, id(el)) "Element $(id(el)) already exists in the circuit"
 
     push!(circuit.els, el)
     circuit.el_index[id(el)] = length(circuit.els)
