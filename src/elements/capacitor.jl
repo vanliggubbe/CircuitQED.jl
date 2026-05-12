@@ -4,7 +4,7 @@ struct Capacitor <: LinearElement{2}
     capacitance :: Ref{Mayhaps{Capacitance}}
 end
 
-Capacitor(name :: Symbol, nodes :: Tuple{Node, Node}, capacitance :: Mayhaps{<: Capacitance} = nothing) = Capacitor(name, nodes, Ref{Mayhaps{Capacitance}}(capacitance))
+Capacitor(name, nodes :: Tuple{Any, Any}, capacitance :: Mayhaps{<: Capacitance} = nothing) = Capacitor(Symbol(name), map(Node, nodes), Ref{Mayhaps{Capacitance}}(capacitance))
 
 response(el :: Capacitor, f₀ :: Frequency) = unitless(uref(f₀), el.capacitance[]) .* (zeros(2, 2), zeros(2, 2), [1.0 -1.0; -1.0 1.0])
 

@@ -6,18 +6,18 @@ struct Port <: LinearElement{2}
 end
 
 Port(
-    name :: Symbol,
-    nodes :: Tuple{Node},
+    name,
+    nodes :: Tuple{Any},
     impedance :: Mayhaps{<: ElectricalResistance} = nothing,
     temperature :: Mayhaps{<: Temperature} = nothing
-) = Port(name, nodes, Ref{Mayhaps{ElectricalResistance}}(impedance), Ref{Mayhaps{Temperature}}(temperature))
+) = Port(Symbol(name), map(Node, nodes), Ref{Mayhaps{ElectricalResistance}}(impedance), Ref{Mayhaps{Temperature}}(temperature))
 
 Port(
-    name :: Symbol,
-    node :: Node,
+    name,
+    node,
     impedance :: Mayhaps{<: ElectricalResistance} = nothing,
     temperature :: Mayhaps{<: Temperature} = nothing
-) = Port(name, (node,), Ref{Mayhaps{ElectricalResistance}}(impedance), Ref{Mayhaps{Temperature}}(temperature))
+) = Port(Symbol(name), (Node(node),), Ref{Mayhaps{ElectricalResistance}}(impedance), Ref{Mayhaps{Temperature}}(temperature))
 
 response(el :: Port, f₀ :: Frequency) = inv(unitless(uref(f₀), el.impedance[])) .* (zeros(2, 2), [0.0 0.0; 0.0 1.0], zeros(2, 2))
 

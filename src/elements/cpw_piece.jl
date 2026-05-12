@@ -6,6 +6,14 @@ struct CPWPiece <: LinearElement{3}
     n_aux :: Ref{Mayhaps{Integer}}
 end
 
+CPWPiece(
+    name,
+    nodes :: Tuple{Any, Any},
+    impedance :: Mayhaps{<: ElectricalResistance} = nothing,
+    hw_freq :: Mayhaps{<: Frequency} = nothing,
+    n_aux :: Mayhaps{<: Integer} = nothing
+) = CPWPiece(Symbol(name), map(Node, nodes), Ref{Mayhaps{ElectricalResistance}}(impedance), Ref{Mayhaps{Frequency}}(hw_freq), Ref{Mayhaps{Integer}}(n_aux))
+
 dc_supercurrent(:: Type{<: CPWPiece}) = (false, true, true)
 
 response(el :: CPWPiece, f₀ :: Frequency) = let Y = inv(unitless(uref(f₀), el.impedance[])), ω = unitless(uref(f₀), 2π * el.hw_freq[]), n = el.n_aux[]

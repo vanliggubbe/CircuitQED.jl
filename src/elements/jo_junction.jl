@@ -5,22 +5,22 @@ struct JoJunction <: NonlinearElement{2}
 end
 
 JoJunction(
-    name :: Symbol,
-    nodes :: Tuple{Node, Node},
+    name,
+    nodes :: Tuple{Any, Any},
     crit_current :: Mayhaps{<: Current} = nothing
-) = JoJunction(name, nodes, Ref{Mayhaps{Current}}(crit_current))
+) = JoJunction(Symbol(name), map(Node, nodes), Ref{Mayhaps{Current}}(crit_current))
 
 JoJunction(
-    name :: Symbol,
-    nodes :: Tuple{Node, Node},
+    name,
+    nodes :: Tuple{Any, Any},
     j_energy :: Energy
-) = JoJunction(name, nodes, Ref{Mayhaps{Current}}(uconvert(u"A", j_energy * 2π / 1.0u"Φ0")))
+) = JoJunction(Symbol(name), map(Node, nodes), Ref{Mayhaps{Current}}(uconvert(u"A", j_energy * 2π / 1.0u"Φ0")))
 
 JoJunction(
-    name :: Symbol,
-    nodes :: Tuple{Node, Node},
+    name,
+    nodes :: Tuple{Any, Any},
     j_energy :: Frequency
-) = JoJunction(name, nodes, Ref{Mayhaps{Current}}(uconvert(u"A", j_energy * 2π * 1.0u"h" / 1.0u"Φ0")))
+) = JoJunction(Symbol(name), map(Node, nodes), Ref{Mayhaps{Current}}(uconvert(u"A", j_energy * 2π * 1.0u"h" / 1.0u"Φ0")))
 
 dc_supercurrent(:: Type{<: JoJunction}) = (true, true)
 

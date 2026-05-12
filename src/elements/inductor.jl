@@ -4,7 +4,7 @@ struct Inductor <: LinearElement{2}
     inductance :: Ref{Mayhaps{Inductance}}
 end
 
-Inductor(name :: Symbol, nodes :: Tuple{Node, Node}, inductance :: Mayhaps{<: Inductance} = nothing) = Inductor(name, nodes, Ref{Mayhaps{Inductance}}(inductance))
+Inductor(name, nodes :: Tuple{Any, Any}, inductance :: Mayhaps{<: Inductance} = nothing) = Inductor(Symbol(name), map(Node, nodes), Ref{Mayhaps{Inductance}}(inductance))
 
 dc_supercurrent(:: Type{<: Inductor}) = (true, true)
 

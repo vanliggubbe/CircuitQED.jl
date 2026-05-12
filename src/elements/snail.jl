@@ -8,13 +8,13 @@ struct SNAIL <: NonlinearElement{2}
 end
 
 SNAIL(
-    name :: Symbol,
-    nodes :: Tuple{Node, Node},
+    name,
+    nodes :: Tuple{Any, Any},
     crit_current :: Mayhaps{<: Current} = nothing,
     n :: Mayhaps{Int} = nothing,
     asymmetry :: Mayhaps{<: Real} = nothing,
     flux :: Mayhaps{<: MagneticFlux} = nothing
-) = SNAIL(name, nodes, Ref{Mayhaps{Current}}(crit_current), Ref{Mayhaps{Int}}(n), Ref{Mayhaps{Real}}(asymmetry), Ref{Mayhaps{MagneticFlux}}(flux))
+) = SNAIL(Symbol(name), map(Node, nodes), Ref{Mayhaps{Current}}(crit_current), Ref{Mayhaps{Int}}(n), Ref{Mayhaps{Real}}(asymmetry), Ref{Mayhaps{MagneticFlux}}(flux))
 
 dc_supercurrent(:: Type{<: SNAIL}) = (true, true)
 
