@@ -20,7 +20,16 @@ end
 
 id(el :: T) where {T <: Element} = (Symbol(T), el.name)
 
-nodes(el :: Element{N}) where {N} = (length(el.nodes) == N ? el.nodes : (ground(), el.nodes...))
+terminals(el :: Element) = el.nodes
+coordinates(el :: Element{N}) where {N} = (length(el.nodes) == N ? el.nodes : (ground(), el.nodes...))
+nodes(el :: Element) = coordinates(el)
+
+has_inertia(el :: LinearElement, f₀ :: Frequency) = !all(iszero, response(el, f₀)[3])
+has_damping(el :: LinearElement, f₀ :: Frequency) = !all(iszero, response(el, f₀)[2])
+has_potential(el :: LinearElement, f₀ :: Frequency) = !all(iszero, response(el, f₀)[1])
+has_inertia(el :: NonlinearElement, f₀ :: Frequency) = false
+has_damping(el :: NonlinearElement, f₀ :: Frequency) = false
+has_potential(el :: NonlinearElement, f₀ :: Frequency) = true
 
 include("capacitor.jl")
 include("inductor.jl")

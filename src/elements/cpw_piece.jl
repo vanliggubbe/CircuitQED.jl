@@ -16,6 +16,9 @@ CPWPiece(
 
 dc_supercurrent(:: Type{<: CPWPiece}) = (false, true, true)
 
+aux_node(el :: CPWPiece, i :: Integer) = Symbol("#", el.name, "_aux_", i)
+coordinates(el :: CPWPiece) = (ground(), el.nodes..., (aux_node(el, i) for i in 1 : el.n_aux[])...)
+
 response(el :: CPWPiece, f₀ :: Frequency) = let Y = inv(unitless(uref(f₀), el.impedance[])), ω = unitless(uref(f₀), 2π * el.hw_freq[]), n = el.n_aux[]
     col1 = inv.(1 : n) * sqrt(2.0 * Y / π / ω)
     col2 = -col1 .* ((-1) .^ (1 : n))

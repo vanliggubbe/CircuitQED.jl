@@ -19,6 +19,35 @@ end
 
 ClassicalEOM(circuit :: Circuit, f₀ :: Frequency) = ClassicalEOM(Float64, circuit, f₀)
 
+function _linear_idxs(circuit, el)
+    idxs = Int[]
+    idxs_el = Int[]
+    for (i, node) in enumerate(coordinates(el))
+        idx = node_index(circuit, node)
+        if idx != 0
+            push!(idxs, idx)
+            push!(idxs_el, i)
+        end
+    end
+    return idxs, idxs_el
+end
+
+function _add_response!(K, K_el, idxs, idxs_el)
+    for (i, i_el) in zip(idxs, idxs_el)
+        for (j, j_el) in zip(idxs, idxs_el)
+            K[i, j] += K_el[i_el, j_el]
+        end
+    end
+    return K
+end
+
+function _add_nl_response!(dst, src, idxs, idxs_el, cols)
+    for (i, i_el) in zip(idxs, idxs_el)
+        dst[i, cols] .+= src[i_el, :]
+    end
+    return dst
+end
+
 function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {T <: Real}
     n_dof = ndof(circuit)
     if !isfinite(n_dof)
@@ -29,7 +58,6 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
         zeros(T, n_dof, n_dof),
         zeros(T, n_dof, n_dof)
     )
-    last_dof = length(circuit.nds) - 1
     p_nl = Matrix{T}(undef, n_dof, 0)
     q_nl = Matrix{T}(undef, n_dof, 0)
     θ_nl = Vector{T}(undef, 0)
@@ -38,19 +66,16 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
     input = spzeros(T, n_dof, sum(x -> x isa Port, circuit.els))
     i_port = 1
     for el in circuit.els
-        idxs = [node_index(circuit, node) for node in nodes(el) if node != ground()]
-        idxs_el = [i for (i, node) in enumerate(nodes(el)) if node != ground()]
+        idxs, idxs_el = _linear_idxs(circuit, el)
 
         if el isa LinearElement
-            K_el = response(el, f₀)
-            if size(K_el[1], 1) != length(nodes(el))
-                # there are auxiliary dofs
-                append!(idxs, last_dof .+ (1 : el.n_aux[]))
-                append!(idxs_el, length(nodes(el)) .+ (1 : el.n_aux[]))
-                last_dof += el.n_aux[]
+            if el isa Short
+                continue
             end
+            K_el = response(el, f₀)
+            @argcheck all(size(K_i, 1) == length(coordinates(el)) && size(K_i, 2) == length(coordinates(el)) for K_i in K_el)
             for i in 1 : 3
-                K[i][idxs, idxs] .+= K_el[i][idxs_el, idxs_el]
+                _add_response!(K[i], K_el[i], idxs, idxs_el)
             end
         else
             # nonlinear elements
@@ -59,8 +84,9 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
             n = length(θ_el)
             p_nl = hcat(p_nl, zeros(n_dof, n))
             q_nl = hcat(q_nl, zeros(n_dof, n))
-            p_nl[idxs, end - n + 1 : end] .= p_el[idxs_el, :]
-            q_nl[idxs, end - n + 1 : end] .= q_el[idxs_el, :]
+            cols = (size(p_nl, 2) - n + 1) : size(p_nl, 2)
+            _add_nl_response!(p_nl, p_el, idxs, idxs_el, cols)
+            _add_nl_response!(q_nl, q_el, idxs, idxs_el, cols)
             append!(θ_nl, θ_el)
         end
         if el isa Port

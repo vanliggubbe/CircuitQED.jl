@@ -6,5 +6,8 @@ end
 Short(name, nodes :: Tuple) = Short(Symbol(name), map(Node, nodes))
 
 dc_supercurrent(:: Type{<: Short{N}}) where {N} = tuple(fill(true, N)...)
+has_inertia(el :: Short, f₀ :: Frequency) = false
+has_damping(el :: Short, f₀ :: Frequency) = false
+has_potential(el :: Short, f₀ :: Frequency) = false
 
 Base.show(io :: IO, el :: Short) = print(io, "Short link $(el.name)($(join(el.nodes, ",")))")
