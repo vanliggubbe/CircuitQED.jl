@@ -27,6 +27,7 @@ function Base.getproperty(rf :: RFSolver, name :: Symbol)
 end
 
 function RFSolver(eom :: ClassicalEOM{T}, F :: Frequency, n_fourier :: Int = 1) where {T}
+    error("RFSolver has not been updated for first-order ClassicalEOM yet")
     @argcheck n_fourier > 0
     @argcheck F > zero(typeof(F))
     ω = unitless(uref(eom.f₀), 2π * F)

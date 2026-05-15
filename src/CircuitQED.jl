@@ -1,7 +1,6 @@
 module CircuitQED
 
-import LinearAlgebra: Diagonal, I, mul!, axpy!, factorize, ldiv!, lu!
-import SparseArrays: SparseMatrixCSC, spzeros
+import LinearAlgebra: Diagonal, I, mul!, axpy!, factorize, ldiv!, lu!, svd
 import Unitful: Capacitance, Inductance, ElectricalResistance, Temperature, Frequency, Current, MagneticFlux, Energy, Time, @u_str, uconvert
 import LessUnits: unitless, unitof
 import SpecialFunctions: besselj1, besselj0, besselj
@@ -16,7 +15,7 @@ export Circuit, ground, add_element!, add_elements!
 export Capacitor, Inductor, Resistor, Port, JoJunction, CPWPiece, SNAIL, Short
 include("circuits.jl")
 
-export ClassicalEOM, RFSolver, steady_state, scattering_matrix
+export AffineSineForm, ClassicalEOM, RFSolver, steady_state, scattering_matrix, output_voltage
 include("solvers/solvers.jl")
 
 end
