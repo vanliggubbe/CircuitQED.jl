@@ -95,6 +95,19 @@ ndof(circuit :: Circuit) = maximum(values(circuit.nd_index)) - 1
 @inline node_index(circuit, node :: Node) = circuit.nd_index[node] - 1
 @inline node_index(circuit, node :: Node, default :: Int) = get(circuit.nd_index, node, default + 1) - 1
 
+function _linear_idxs(circuit :: Circuit, el :: Element)
+    idxs = Int[]
+    idxs_el = Int[]
+    for (i, node) in enumerate(coordinates(el))
+        idx = node_index(circuit, node)
+        if idx != 0
+            push!(idxs, idx)
+            push!(idxs_el, i)
+        end
+    end
+    return idxs, idxs_el
+end
+
 # printing
 function Base.show(io :: IO, circuit :: Circuit)
     println("Elements:")

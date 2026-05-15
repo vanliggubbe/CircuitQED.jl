@@ -2,6 +2,29 @@ const Mayhaps = Union{Nothing, T} where {T}
 
 @inline uref(f :: Frequency) = (2π * f, 1.0u"ħ", 2.0u"q", 1.0u"k")
 
+function _rowspace_basis(A :: AbstractMatrix{T}) where {T <: Real}
+    if size(A, 2) == 0
+        return zeros(T, 0, 0)
+    end
+    decomp = svd(Matrix(A))
+    σmax = isempty(decomp.S) ? zero(T) : maximum(decomp.S)
+    tol = max(size(A)...) * eps(T) * σmax
+    r = count(>(tol), decomp.S)
+    return Matrix(decomp.V[:, 1 : r])
+end
+
+function _range_null_basis(A :: AbstractMatrix{T}) where {T <: Real}
+    if size(A, 1) == 0
+        return zeros(T, 0, 0), zeros(T, 0, 0)
+    end
+    decomp = svd(Matrix(A))
+    σmax = isempty(decomp.S) ? zero(T) : maximum(decomp.S)
+    tol = max(size(A)...) * eps(T) * σmax
+    r = count(>(tol), decomp.S)
+    V = Matrix(decomp.V)
+    return V[:, 1 : r], V[:, r + 1 : end]
+end
+
 
 function inf_toeplitz_fun(left :: Int, coeff :: Vector{T}, fun :: Function; atol :: Real = zero(real(T)), rtol :: Real = iszero(atol) ? sqrt(eps(real(T))) : zero(real(T))) where {T <: Number}
     @argcheck atol >= zero(eltype(atol))

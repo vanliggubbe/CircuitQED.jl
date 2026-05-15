@@ -29,19 +29,6 @@ end
 
 ClassicalEOM(circuit :: Circuit, f₀ :: Frequency) = ClassicalEOM(Float64, circuit, f₀)
 
-function _linear_idxs(circuit, el)
-    idxs = Int[]
-    idxs_el = Int[]
-    for (i, node) in enumerate(coordinates(el))
-        idx = node_index(circuit, node)
-        if idx != 0
-            push!(idxs, idx)
-            push!(idxs_el, i)
-        end
-    end
-    return idxs, idxs_el
-end
-
 function _add_response!(K, K_el, idxs, idxs_el)
     for (i, i_el) in zip(idxs, idxs_el)
         for (j, j_el) in zip(idxs, idxs_el)
@@ -56,29 +43,6 @@ function _add_nl_response!(dst, src, idxs, idxs_el, cols)
         dst[i, cols] .+= src[i_el, :]
     end
     return dst
-end
-
-function _rowspace_basis(A :: AbstractMatrix{T}) where {T <: Real}
-    if size(A, 2) == 0
-        return zeros(T, 0, 0)
-    end
-    decomp = svd(Matrix(A))
-    σmax = isempty(decomp.S) ? zero(T) : maximum(decomp.S)
-    tol = max(size(A)...) * eps(T) * σmax
-    r = count(>(tol), decomp.S)
-    return Matrix(decomp.V[:, 1 : r])
-end
-
-function _range_null_basis(A :: AbstractMatrix{T}) where {T <: Real}
-    if size(A, 1) == 0
-        return zeros(T, 0, 0), zeros(T, 0, 0)
-    end
-    decomp = svd(Matrix(A))
-    σmax = isempty(decomp.S) ? zero(T) : maximum(decomp.S)
-    tol = max(size(A)...) * eps(T) * σmax
-    r = count(>(tol), decomp.S)
-    V = Matrix(decomp.V)
-    return V[:, 1 : r], V[:, r + 1 : end]
 end
 
 function _eval!(y, form :: AffineSineForm, x, u)
@@ -97,6 +61,8 @@ function _jac!(jac, form :: AffineSineForm, x)
     end
     return jac
 end
+
+_is_near_zero(A :: AbstractArray{T}) where {T <: Real} = isempty(A) || maximum(abs, A) <= 1000 * eps(T)
 
 function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {T <: Real}
     n_raw = ndof(circuit)
@@ -157,27 +123,46 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
     port_voltage_red = port_voltage * R
 
     U, N = _range_null_basis(K2)
+    W₀, Z₀ = _range_null_basis(N' * K1 * N)
+    W = N * W₀
+    Z = N * Z₀
     n_inertial = size(U, 2)
-    n_massless = size(N, 2)
+    n_damped = size(W, 2)
+    n_algebraic = size(Z, 2)
     n_coord = size(R, 2)
-    n_state = 2 * n_inertial + n_massless
+    n_state = 2 * n_inertial + n_damped
     n_input = size(input, 2)
     n_terms = length(θ_nl)
 
-    # State layout is [a; ȧ; b], where reduced phases are ψ = U*a + N*b.
-    phase_from_state = hcat(U, zeros(T, n_coord, n_inertial), N)
-    velocity_from_adot = hcat(zeros(T, n_coord, n_inertial), U, zeros(T, n_coord, n_massless))
+    # State layout is [a; ȧ; b], where reduced phases are ψ = U*a + W*b + Z*c.
+    # The algebraic coordinate c is eliminated below for linear constraints.
+    phase_from_state = hcat(U, zeros(T, n_coord, n_inertial), W)
+    velocity_from_adot = hcat(zeros(T, n_coord, n_inertial), U, zeros(T, n_coord, n_damped))
     q_state = phase_from_state' * q_red
 
-    bA = zeros(T, n_massless, n_state)
-    bB = zeros(T, n_massless, n_input)
-    bP = zeros(T, n_massless, n_terms)
-    if n_massless > 0
-        Dnn = N' * K1 * N
-        @argcheck size(_rowspace_basis(Dnn), 2) == n_massless "ClassicalEOM has algebraic constraints after gauge reduction; explicit ODE reduction is not implemented for this circuit"
-        bA .= Dnn \ (N' * K0 * phase_from_state - N' * K1 * velocity_from_adot)
-        bB .= Dnn \ (-2.0 * N' * input_red)
-        bP .= Dnn \ (-N' * p_red)
+    cA = zeros(T, n_algebraic, n_state)
+    cB = zeros(T, n_algebraic, n_input)
+    cP = zeros(T, n_algebraic, n_terms)
+    if n_algebraic > 0
+        @argcheck _is_near_zero(Z' * q_red) "Nonlinear algebraic constraints are not implemented"
+        @argcheck _is_near_zero(U' * K1 * Z) "Algebraic constraints with inertial damping coupling are not implemented"
+        @argcheck _is_near_zero(port_voltage_red * Z) "Port voltages depending on algebraic coordinate velocities are not implemented"
+        Kzz = Z' * K0 * Z
+        @argcheck size(_rowspace_basis(Kzz), 2) == n_algebraic "Unresolved algebraic constraints remain after linear condensation"
+        cA .= Kzz \ (-Z' * K0 * phase_from_state + Z' * K1 * velocity_from_adot)
+        cB .= Kzz \ (2.0 * Z' * input_red)
+        cP .= Kzz \ (Z' * p_red)
+    end
+
+    bA = zeros(T, n_damped, n_state)
+    bB = zeros(T, n_damped, n_input)
+    bP = zeros(T, n_damped, n_terms)
+    if n_damped > 0
+        Dww = W' * K1 * W
+        @argcheck size(_rowspace_basis(Dww), 2) == n_damped "ClassicalEOM has unresolved massless constraints"
+        bA .= Dww \ (W' * K0 * phase_from_state - W' * K1 * velocity_from_adot + W' * K0 * Z * cA)
+        bB .= Dww \ (-2.0 * W' * input_red + W' * K0 * Z * cB)
+        bP .= Dww \ (-W' * p_red + W' * K0 * Z * cP)
     end
 
     aA = zeros(T, n_inertial, n_state)
@@ -185,9 +170,9 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
     aP = zeros(T, n_inertial, n_terms)
     if n_inertial > 0
         Mii = U' * K2 * U
-        aA .= Mii \ (U' * K0 * phase_from_state - U' * K1 * velocity_from_adot - U' * K1 * N * bA)
-        aB .= Mii \ (-2.0 * U' * input_red - U' * K1 * N * bB)
-        aP .= Mii \ (-U' * p_red - U' * K1 * N * bP)
+        aA .= Mii \ (U' * K0 * phase_from_state - U' * K1 * velocity_from_adot + U' * K0 * Z * cA - U' * K1 * W * bA)
+        aB .= Mii \ (-2.0 * U' * input_red + U' * K0 * Z * cB - U' * K1 * W * bB)
+        aP .= Mii \ (-U' * p_red + U' * K0 * Z * cP - U' * K1 * W * bP)
     end
 
     A = zeros(T, n_state, n_state)
@@ -199,19 +184,19 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
         B[n_inertial .+ (1 : n_inertial), :] .= aB
         P[n_inertial .+ (1 : n_inertial), :] .= aP
     end
-    if n_massless > 0
-        rows = 2 * n_inertial .+ (1 : n_massless)
+    if n_damped > 0
+        rows = 2 * n_inertial .+ (1 : n_damped)
         A[rows, :] .= bA
         B[rows, :] .= bB
         P[rows, :] .= bP
     end
 
-    # Port voltages are linear combinations of phase velocities. For massless
-    # coordinates, phase velocity is itself obtained from the explicit RHS.
-    velocity_from_state = velocity_from_adot + N * bA
+    # Port voltages are linear combinations of phase velocities. For damped
+    # massless coordinates, phase velocity is itself obtained from the RHS.
+    velocity_from_state = velocity_from_adot + W * bA
     C = port_voltage_red * velocity_from_state
-    D = port_voltage_red * N * bB
-    P_out = port_voltage_red * N * bP
+    D = port_voltage_red * W * bB
+    P_out = port_voltage_red * W * bP
 
     dynamics = AffineSineForm(A, B, P, q_state, θ_nl)
     output = AffineSineForm(C, D, P_out, q_state, θ_nl)
