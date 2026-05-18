@@ -6,7 +6,7 @@ using LinearAlgebra
 using Test
 
 function test_jacobian(eom; ε :: Real = 1e-4)
-    v_i(_) = zeros(size(eom.dynamics.B, 2))
+    v_i(_) = zeros(size(eom.dyn.B, 2))
     u = randn(ndof(eom))
     fun = ODEFunction(eom)
     jac_fd = zeros(eltype(eom), ndof(eom), ndof(eom))
@@ -40,13 +40,13 @@ end
 
     @testset "Classical" begin
         eom = ClassicalEOM(circ, 1u"GHz")
-        @test ndof(eom) == size(eom.dynamics.A, 1)
-        @test size(eom.dynamics.B, 2) == 1
-        @test size(eom.output.A, 1) == 1
+        @test ndof(eom) == size(eom.dyn.A, 1)
+        @test size(eom.dyn.B, 2) == 1
+        @test size(eom.out, 1) == 1
         @test eom.port_index[:drive] == 1
 
         u = test_jacobian(eom)
-        @test length(output_voltage(eom, u, [0.0])) == 1
+        @test length(output_voltage(eom, u, [0.0])) == size(eom.out, 1)
     end
     @testset "Classical reductions" begin
         massive = ClassicalEOM(Circuit([
@@ -56,7 +56,7 @@ end
         ]), 1u"GHz")
         @test ndof(massive) == 2
         @test massive.port_index[:p] == 1
-        @test length(output_voltage(massive, test_jacobian(massive), [0.0])) == 1
+        @test length(output_voltage(massive, test_jacobian(massive), [0.0])) == size(massive.out, 1)
 
         massless = ClassicalEOM(Circuit([
             Inductor(:L, (ground(), :n), 1u"nH"),
@@ -65,16 +65,14 @@ end
         ]), 1u"GHz")
         @test ndof(massless) == 1
         @test massless.port_index[:p] == 1
-        @test length(output_voltage(massless, test_jacobian(massless), [0.0])) == 1
+        @test length(output_voltage(massless, test_jacobian(massless), [0.0])) == size(massless.out, 1)
 
-        series = ClassicalEOM(Circuit([
+        series = Circuit([
             Inductor(:L1, (ground(), :mid), 1u"nH"),
             Inductor(:L2, (:mid, :out), 2u"nH"),
             Port(:p, :out, 50u"Ω")
-        ]), 1u"GHz")
-        @test ndof(series) == 1
-        @test series.port_index[:p] == 1
-        @test length(output_voltage(series, test_jacobian(series), [0.0])) == 1
+        ])
+        @test_throws ErrorException ClassicalEOM(series, 1u"GHz")
 
         capacitive_port = ClassicalEOM(Circuit([
             Capacitor(:C, (ground(), :node), 10u"fF"),
@@ -82,9 +80,9 @@ end
             Capacitor(:C_cpl, (:node, :input), 5u"fF"),
             Port(:drive, :input, 50u"Ω")
         ]), 1u"GHz")
-        @test ndof(capacitive_port) == 3
-        @test size(capacitive_port.coordinate_basis, 2) == 1
+        @test ndof(capacitive_port) == size(capacitive_port.dyn.A, 1)
+        @test size(capacitive_port.out, 1) == 1
         @test capacitive_port.port_index[:drive] == 1
-        @test length(output_voltage(capacitive_port, test_jacobian(capacitive_port), [0.0])) == 1
+        @test length(output_voltage(capacitive_port, test_jacobian(capacitive_port), [0.0])) == size(capacitive_port.out, 1)
     end
 end

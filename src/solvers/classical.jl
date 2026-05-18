@@ -132,7 +132,7 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
         K2 = U' * K[2] * V
         K1 = U' * K[1] * V
         q_nl = V' * q_nl
-        p_nl = U' * q_nl
+        p_nl = U' * p_nl
         input = U' * input
         port_voltage = port_voltage * V
 
@@ -185,7 +185,7 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
         out = hcat(port_voltage, zeros(T, size(input, 2), n_v))
     end
 
-    cokernel, kernel = domain_basis([dyn.A; q_nl'])
+    cokernel, kernel = domain_basis([dyn.A; dyn.q_nl'])
     if size(kernel, 1) > 0
         # there are cyclic degrees of freedom
         dyn = AffineSineForm(
