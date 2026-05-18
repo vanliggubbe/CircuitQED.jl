@@ -34,8 +34,8 @@ function (f :: AffineSineForm)(x, u)
     return _eval!(y, f, x, u)
 end
 
-struct ClassicalEOM{T <: Real, F <: Frequency}
-    f₀ :: F
+struct ClassicalEOM{T <: Real, U <: Tuple{Vararg{Quantity}}}
+    units :: U
 
     # Minimal explicit state equation:
     # ẋ = dyn.A * x + dyn.B * v_in(t) +
@@ -48,6 +48,7 @@ struct ClassicalEOM{T <: Real, F <: Frequency}
 
     # Maps Port element names to rows of the output form.
     port_index :: Dict{Symbol, Int}
+    port_list :: Vector{Symbol}
 end
 
 ClassicalEOM(circuit :: Circuit, f₀ :: Frequency) = ClassicalEOM(Float64, circuit, f₀)
@@ -82,8 +83,9 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
     input = zeros(T, n_raw, sum(x -> x isa Port, circuit.els))
     port_voltage = zeros(T, size(input, 2), n_raw)
     port_index = Dict{Symbol, Int}()
+    port_list = Symbol[]
+    units = uref(f₀)
 
-    i_port = 1
     for el in circuit.els
         idxs, idxs_el = _linear_idxs(circuit, el)
         if el isa LinearElement
@@ -106,12 +108,12 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
             append!(θ_nl, θ_el)
         end
         if el isa Port
+            push!(port_list, el.name)
             if !isempty(idxs)
-                input[first(idxs), i_port] = inv(unitless(uref(f₀), el.impedance[]))
-                port_voltage[i_port, first(idxs)] = one(T)
+                input[first(idxs), length(port_list)] = inv(unitless(units, el.impedance[]))
+                port_voltage[length(port_list), first(idxs)] = one(T)
             end
-            port_index[el.name] = i_port
-            i_port += 1
+            port_index[el.name] = length(port_list)
         end
     end
 
@@ -186,7 +188,7 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
     end
 
     cokernel, kernel = domain_basis([dyn.A; dyn.q_nl'])
-    if size(kernel, 1) > 0
+    if size(kernel, 2) > 0
         # there are cyclic degrees of freedom
         dyn = AffineSineForm(
             cokernel' * dyn.A * cokernel,
@@ -197,7 +199,7 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
         )
         out = out * cokernel
     end
-    return ClassicalEOM(f₀, dyn, out, port_index)
+    return ClassicalEOM(units, dyn, out, port_index, port_list)
 end
 
 Base.eltype(:: ClassicalEOM{T}) where {T} = T
@@ -216,7 +218,6 @@ function jac!(jac, u, par :: Tuple{ClassicalEOM, Function}, _)
     return _jac!(jac, eom.dyn, u)
 end
 
-output_voltage(eom :: ClassicalEOM, u, v_in) = (eom.out * eom.dyn(u, v_in) - v_in)
 
 """
     steady_state(eom :: ClassicalEOM; n_newton :: Integer = 10)
@@ -242,29 +243,73 @@ end
 function scattering_matrix(eom :: ClassicalEOM, fs; n_newton :: Integer = 10)
     steady = steady_state(eom; n_newton)
     jac = schur(_jac0!(zeros(eltype, ndof(eom), ndof(eom)), steady, eom))
-    ref = uref(eom.f₀)
     S = Matrix{Complex{eltype(eom)}}[]
     for f in fs
-        ω = 2π * unitless(ref, f)
+        ω = 2π * unitless(eom.units, f)
         push!(S, (-im * ω) * eom.out * jac.Z * ((-im * ω - jac.T) \ (jac.Z' * eom.dyn.B)) - I)
     end
     return S
 end
 
-
 ODEFunction(eom :: ClassicalEOM) = ODEFunction(rhs!; jac = jac!, jac_prototype = zeros(eltype(eom), ndof(eom), ndof(eom)))
+
+unitless_input(
+    units :: Tuple{Vararg{Quantity}}, 
+    v_i :: Function, 
+    port_index :: Dict{Symbol, Int}
+) = let v_i = v_i, port_index = port_index, t₀ = unitof(Time, units), nports = maximum(values(port_index)), units = units
+    t -> let
+        ret = zeros(nports)
+        was = trues(nports)
+        for (p, u) in v_i(t * t₀)
+            i = port_index[p]
+            @argcheck u isa Voltage
+            @argcheck was[i] "Input voltage at port $(p) is given multiple times"
+            was[i] = false
+            ret[i] = unitless(units, u)
+        end
+        ret
+    end
+end
 
 function ODEProblem(eom :: ClassicalEOM, v_i :: Function, tspan :: Tuple{Time, Time}, init = nothing; n_newton :: Integer = 10)
     fun = ODEFunction(eom)
     x₀ = (init isa Nothing ? steady_state(eom; n_newton) : init)
     return ODEProblem{true}(
         fun, x₀, (
-            unitless(uref(eom.f₀), tspan[1]),
-            unitless(uref(eom.f₀), tspan[2])
+            unitless(eom.units, tspan[1]),
+            unitless(eom.units, tspan[2])
         ), (
-            eom, let v_i = v_i, f₀ = eom.f₀;
-                t -> [unitless(uref(f₀), x) for x in v_i(unitof(Time, uref(f₀)) * t)]
-            end
+            eom, unitless_input(eom.units, v_i, eom.port_index)
         )
     )
+end
+
+_output_voltage(eom :: ClassicalEOM, u, v_in) = (eom.out * eom.dyn(u, v_in) - v_in)
+
+function output_voltage(sol :: ODESolution, t :: Time)
+    (eom, v_i) = sol.prob.p
+    t_ul = unitless(eom.units, t)
+    V₀ = unitof(u"V", eom.units)
+    return Dict(zip(
+        eom.port_list,
+        _output_voltage(eom, sol(t_ul), v_i(t_ul)) * V₀
+    ))
+end
+
+function output_voltage(sol :: ODESolution, port :: Symbol, t :: Time)
+    (eom, v_i) = sol.prob.p
+    i = eom.port_index[port]
+    t_ul = unitless(eom.units, t)
+    return _output_voltage(eom, sol(t_ul), v_i(t_ul))[i] * unitof(u"V", eom.units)
+end
+
+function output_voltage(sol :: ODESolution, port :: Symbol, ts)
+    (eom, v_i) = sol.prob.p
+    i = eom.port_index[port]
+    return [
+        let t_ul = unitless(eom.units, t);
+            _output_voltage(eom, sol(t_ul), v_i(t_ul))[i]
+        end for t in ts
+    ] * unitof(u"V", eom.units)
 end
