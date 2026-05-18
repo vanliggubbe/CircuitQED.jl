@@ -75,8 +75,16 @@ end
         @test ndof(series) == 1
         @test series.port_index[:p] == 1
         @test length(output_voltage(series, test_jacobian(series), [0.0])) == 1
-    end
-    @testset "RF" begin
-        @test_throws ErrorException RFSolver(circ, 10u"GHz", 1u"GHz", 1)
+
+        capacitive_port = ClassicalEOM(Circuit([
+            Capacitor(:C, (ground(), :node), 10u"fF"),
+            Inductor(:L, (ground(), :node), 1u"nH"),
+            Capacitor(:C_cpl, (:node, :input), 5u"fF"),
+            Port(:drive, :input, 50u"Ω")
+        ]), 1u"GHz")
+        @test ndof(capacitive_port) == 3
+        @test size(capacitive_port.coordinate_basis, 2) == 1
+        @test capacitive_port.port_index[:drive] == 1
+        @test length(output_voltage(capacitive_port, test_jacobian(capacitive_port), [0.0])) == 1
     end
 end

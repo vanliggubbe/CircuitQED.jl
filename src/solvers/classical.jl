@@ -1,5 +1,5 @@
 struct AffineSineForm{T <: Real}
-    # y = A*x + B*u + p_nl*sin.(q_nl'*x .- θ_nl)
+    # y = A * x + B * u + p_nl * sin.(q_nl' * x .- θ_nl)
     A :: Matrix{T}
     B :: Matrix{T}
     p_nl :: Matrix{T}
@@ -7,24 +7,47 @@ struct AffineSineForm{T <: Real}
     θ_nl :: Vector{T}
 end
 
+function _eval!(y, form :: AffineSineForm, x)
+    mul!(y, form.A, x)
+    for (p, q, θ) in zip(eachcol(form.p_nl), eachcol(form.q_nl), form.θ_nl)
+        axpy!(sin(q' * x - θ), p, y)
+    end
+    return y
+end
+
+function _eval!(y, form :: AffineSineForm, x, u)
+    _eval!(y, form, x)
+    mul!(y, form.B, u, one(eltype(y)), one(eltype(y)))
+    return y
+end
+
+function _jac!(jac, form :: AffineSineForm, x)
+    jac .= form.A
+    for (p, q, θ) in zip(eachcol(form.p_nl), eachcol(form.q_nl), form.θ_nl)
+        mul!(jac, p, q', cos(q' * x - θ), one(eltype(jac)))
+    end
+    return jac
+end
+
+function (f :: AffineSineForm)(x, u)
+    y = Vector{promote_type(eltype(x), eltype(u))}(undef, size(f.A, 1))
+    return _eval!(y, f, x, u)
+end
+
 struct ClassicalEOM{T <: Real, F <: Frequency}
     f₀ :: F
 
     # Minimal explicit state equation:
-    # ẋ = dynamics.A*x + dynamics.B*v_in(t) +
-    #      dynamics.p_nl*sin.(dynamics.q_nl'*x .- dynamics.θ_nl).
-    dynamics :: AffineSineForm{T}
+    # ẋ = dyn.A * x + dyn.B * v_in(t) +
+    #     dyn.p_nl * sin.(dyn.q_nl' * x .- dyn.θ_nl).
+    dyn :: AffineSineForm{T}
 
     # Port voltage readout:
-    # v_out = output.A*x + output.B*v_in(t) +
-    #         output.p_nl*sin.(output.q_nl'*x .- output.θ_nl).
-    output :: AffineSineForm{T}
+    # v_out = out * ẋ - v_in(t)
+    out :: Matrix{T}
 
     # Maps Port element names to rows of the output form.
     port_index :: Dict{Symbol, Int}
-
-    # Raw circuit phases are coordinate_basis * reduced_phase_coordinates.
-    coordinate_basis :: Matrix{T}
 end
 
 ClassicalEOM(circuit :: Circuit, f₀ :: Frequency) = ClassicalEOM(Float64, circuit, f₀)
@@ -44,25 +67,6 @@ function _add_nl_response!(dst, src, idxs, idxs_el, cols)
     end
     return dst
 end
-
-function _eval!(y, form :: AffineSineForm, x, u)
-    mul!(y, form.A, x)
-    mul!(y, form.B, u, one(eltype(y)), one(eltype(y)))
-    for (p, q, θ) in zip(eachcol(form.p_nl), eachcol(form.q_nl), form.θ_nl)
-        axpy!(sin(q' * x - θ), p, y)
-    end
-    return y
-end
-
-function _jac!(jac, form :: AffineSineForm, x)
-    jac .= form.A
-    for (p, q, θ) in zip(eachcol(form.p_nl), eachcol(form.q_nl), form.θ_nl)
-        mul!(jac, p, q', cos(q' * x - θ), one(eltype(jac)))
-    end
-    return jac
-end
-
-_is_near_zero(A :: AbstractArray{T}) where {T <: Real} = isempty(A) || maximum(abs, A) <= 1000 * eps(T)
 
 function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {T <: Real}
     n_raw = ndof(circuit)
@@ -111,123 +115,108 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
         end
     end
 
-    # Remove phase directions that do not affect equations, nonlinear phases,
-    # inputs, or observable port voltages.
-    R = _rowspace_basis([K[1]; K[2]; K[3]; q_nl'; input'; port_voltage])
-    K0 = R' * K[1] * R
-    K1 = R' * K[2] * R
-    K2 = R' * K[3] * R
-    p_red = R' * p_nl
-    q_red = R' * q_nl
-    input_red = R' * input
-    port_voltage_red = port_voltage * R
+    # find bases of kernels and ranges
+    n_φ = n_raw # number of flux DOF
+    n_v = n_raw # number of voltage DOF
+    
+    local dyn
+    local out
+    if rank(K[3]) < size(K[3], 1)
+        # we have damped modes
+        # or even algebraic conditions
+        U, S, V = svd(K[3])
+        rk = rank(Diagonal(S))
 
-    U, N = _range_null_basis(K2)
-    W₀, Z₀ = _range_null_basis(N' * K1 * N)
-    W = N * W₀
-    Z = N * Z₀
-    n_inertial = size(U, 2)
-    n_damped = size(W, 2)
-    n_algebraic = size(Z, 2)
-    n_coord = size(R, 2)
-    n_state = 2 * n_inertial + n_damped
-    n_input = size(input, 2)
-    n_terms = length(θ_nl)
+        # transform to coordinates which diagonalize massive part
+        K3 = Diagonal(S)
+        K2 = U' * K[2] * V
+        K1 = U' * K[1] * V
+        q_nl = V' * q_nl
+        p_nl = U' * q_nl
+        input = U' * input
+        port_voltage = port_voltage * V
 
-    # State layout is [a; ȧ; b], where reduced phases are ψ = U*a + W*b + Z*c.
-    # The algebraic coordinate c is eliminated below for linear constraints.
-    phase_from_state = hcat(U, zeros(T, n_coord, n_inertial), W)
-    velocity_from_adot = hcat(zeros(T, n_coord, n_inertial), U, zeros(T, n_coord, n_damped))
-    q_state = phase_from_state' * q_red
+        if rank(K2[rk + 1 : end, rk + 1 : end]) == n_φ - rk
+            # only damped modes
+            n_v = rk
+            dyn = AffineSineForm(
+                zeros(T, n_φ + rk, n_φ + rk),
+                zeros(T, n_φ + rk, size(input, 2)),
+                zeros(T, n_φ + rk, size(p_nl, 2)),
+                [q_nl; zeros(T, rk, size(q_nl, 2))],
+                θ_nl
+            )
 
-    cA = zeros(T, n_algebraic, n_state)
-    cB = zeros(T, n_algebraic, n_input)
-    cP = zeros(T, n_algebraic, n_terms)
-    if n_algebraic > 0
-        @argcheck _is_near_zero(Z' * q_red) "Nonlinear algebraic constraints are not implemented"
-        @argcheck _is_near_zero(U' * K1 * Z) "Algebraic constraints with inertial damping coupling are not implemented"
-        @argcheck _is_near_zero(port_voltage_red * Z) "Port voltages depending on algebraic coordinate velocities are not implemented"
-        Kzz = Z' * K0 * Z
-        @argcheck size(_rowspace_basis(Kzz), 2) == n_algebraic "Unresolved algebraic constraints remain after linear condensation"
-        cA .= Kzz \ (-Z' * K0 * phase_from_state + Z' * K1 * velocity_from_adot)
-        cB .= Kzz \ (2.0 * Z' * input_red)
-        cP .= Kzz \ (Z' * p_red)
+            # deal with damped modes
+            M2 = factorize(K2[rk + 1 : end, rk + 1 : end])
+            dyn.A[1 : rk, n_φ + 1 : n_φ + rk] = I(rk)
+            dyn.A[rk + 1 : n_φ, 1 : n_φ] = (M2 \ K1[rk + 1 : n_φ, :])
+            dyn.A[rk + 1 : n_φ, n_φ + 1 : n_φ + rk] = -(M2 \ K2[rk + 1 : end, 1 : rk])
+            dyn.B[rk + 1 : n_φ, :] = 2 * (M2 \ input[rk + 1 : end, :])
+            dyn.p_nl[rk + 1 : n_φ, :] = -(M2 \ p_nl[rk + 1 : n_φ, :])
+
+            # deal with massive modes
+            M3 = K3[1 : rk, 1 : rk] \ K2[1 : rk, :]
+            dyn.A[n_φ + 1 : end, 1 : n_φ] = (K3[1 : rk, 1 : rk] \ K1[1 : rk, :])
+            dyn.A[n_φ + 1 : end, :] -= M3 * dyn.A[1 : n_φ, :]
+            dyn.B[n_φ + 1 : end, :] = 2 * (K3[1 : rk, 1 : rk] \ input[1 : rk, :])
+            dyn.B[n_φ + 1 : end, :] -= M3 * dyn.B[1 : n_φ, :]
+            dyn.p_nl[n_φ + 1 : end, :] = -K3[1 : rk, 1 : rk] \ p_nl[1 : rk, :]
+            dyn.p_nl[n_φ + 1 : end, :] -= M3 * dyn.p_nl[1 : n_φ, :]
+            out = hcat(port_voltage, zeros(T, size(input, 2), rk))
+        else
+            # there are algebraic constraints
+            error("Circuits with algebraic constraints are not supported yet")
+        end
+    else
+        dyn = AffineSineForm(
+            [
+                zeros(T, n_φ, n_φ)  I(n_φ);
+                (K[3] \ K[1])       (-(K[3] \ K[2]))
+            ],
+            [
+                zeros(T, n_φ, size(input, 2));
+                2 * (K[3] \ input)
+            ],
+            [zeros(T, n_φ, size(p_nl, 2)); -K[3] \ p_nl],
+            [q_nl; zeros(T, n_v, size(q_nl, 2))],
+            θ_nl
+        )
+        out = hcat(port_voltage, zeros(T, size(input, 2), n_v))
     end
 
-    bA = zeros(T, n_damped, n_state)
-    bB = zeros(T, n_damped, n_input)
-    bP = zeros(T, n_damped, n_terms)
-    if n_damped > 0
-        Dww = W' * K1 * W
-        @argcheck size(_rowspace_basis(Dww), 2) == n_damped "ClassicalEOM has unresolved massless constraints"
-        bA .= Dww \ (W' * K0 * phase_from_state - W' * K1 * velocity_from_adot + W' * K0 * Z * cA)
-        bB .= Dww \ (-2.0 * W' * input_red + W' * K0 * Z * cB)
-        bP .= Dww \ (-W' * p_red + W' * K0 * Z * cP)
+    cokernel, kernel = domain_basis([dyn.A; q_nl'])
+    if size(kernel, 1) > 0
+        # there are cyclic degrees of freedom
+        dyn = AffineSineForm(
+            cokernel' * dyn.A * cokernel,
+            cokernel' * dyn.B,
+            cokernel' * dyn.p_nl,
+            cokernel' * dyn.q_nl,
+            dyn.θ_nl
+        )
+        out = out * cokernel
     end
-
-    aA = zeros(T, n_inertial, n_state)
-    aB = zeros(T, n_inertial, n_input)
-    aP = zeros(T, n_inertial, n_terms)
-    if n_inertial > 0
-        Mii = U' * K2 * U
-        aA .= Mii \ (U' * K0 * phase_from_state - U' * K1 * velocity_from_adot + U' * K0 * Z * cA - U' * K1 * W * bA)
-        aB .= Mii \ (-2.0 * U' * input_red + U' * K0 * Z * cB - U' * K1 * W * bB)
-        aP .= Mii \ (-U' * p_red + U' * K0 * Z * cP - U' * K1 * W * bP)
-    end
-
-    A = zeros(T, n_state, n_state)
-    B = zeros(T, n_state, n_input)
-    P = zeros(T, n_state, n_terms)
-    if n_inertial > 0
-        A[1 : n_inertial, n_inertial .+ (1 : n_inertial)] .= Matrix{T}(I, n_inertial, n_inertial)
-        A[n_inertial .+ (1 : n_inertial), :] .= aA
-        B[n_inertial .+ (1 : n_inertial), :] .= aB
-        P[n_inertial .+ (1 : n_inertial), :] .= aP
-    end
-    if n_damped > 0
-        rows = 2 * n_inertial .+ (1 : n_damped)
-        A[rows, :] .= bA
-        B[rows, :] .= bB
-        P[rows, :] .= bP
-    end
-
-    # Port voltages are linear combinations of phase velocities. For damped
-    # massless coordinates, phase velocity is itself obtained from the RHS.
-    velocity_from_state = velocity_from_adot + W * bA
-    C = port_voltage_red * velocity_from_state
-    D = port_voltage_red * W * bB
-    P_out = port_voltage_red * W * bP
-
-    dynamics = AffineSineForm(A, B, P, q_state, θ_nl)
-    output = AffineSineForm(C, D, P_out, q_state, θ_nl)
-    return ClassicalEOM(f₀, dynamics, output, port_index, R)
+    return ClassicalEOM(f₀, dyn, out, port_index)
 end
 
 Base.eltype(:: ClassicalEOM{T}) where {T} = T
-ndof(eom :: ClassicalEOM) = size(eom.dynamics.A, 1)
+ndof(eom :: ClassicalEOM) = size(eom.dyn.A, 1)
 
-function _rhs0!(f, x :: AbstractVector, eom :: ClassicalEOM)
-    return _eval!(f, eom.dynamics, x, zeros(eltype(eom), size(eom.dynamics.B, 2)))
-end
-
-function _jac0!(jac, x :: AbstractVector, eom :: ClassicalEOM)
-    return _jac!(jac, eom.dynamics, x)
-end
+_rhs0!(f, x :: AbstractVector, eom :: ClassicalEOM) = _eval!(f, eom.dyn, x)
+_jac0!(jac, x :: AbstractVector, eom :: ClassicalEOM) = _jac!(jac, eom.dyn, x)
 
 function rhs!(du, u, par :: Tuple{ClassicalEOM, Function}, t)
     eom, v_i = par
-    return _eval!(du, eom.dynamics, u, v_i(t))
+    return _eval!(du, eom.dyn, u, v_i(t))
 end
 
 function jac!(jac, u, par :: Tuple{ClassicalEOM, Function}, _)
     eom, _ = par
-    return _jac!(jac, eom.dynamics, u)
+    return _jac!(jac, eom.dyn, u)
 end
 
-function output_voltage(eom :: ClassicalEOM, u, v_in)
-    y = similar(u, size(eom.output.A, 1))
-    return _eval!(y, eom.output, u, v_in)
-end
+output_voltage(eom :: ClassicalEOM, u, v_in) = (eom.out * eom.dyn(u, v_in) - v_in)
 
 """
     steady_state(eom :: ClassicalEOM; n_newton :: Integer = 10)
@@ -251,8 +240,17 @@ function steady_state(eom :: ClassicalEOM{T}; n_newton :: Integer = 10) where {T
 end
 
 function scattering_matrix(eom :: ClassicalEOM, fs; n_newton :: Integer = 10)
-    error("scattering_matrix for first-order ClassicalEOM is not implemented yet")
+    steady = steady_state(eom; n_newton)
+    jac = schur(_jac0!(zeros(eltype, ndof(eom), ndof(eom)), steady, eom))
+    ref = uref(eom.f₀)
+    S = Matrix{Complex{eltype(eom)}}[]
+    for f in fs
+        ω = 2π * unitless(ref, f)
+        push!(S, (-im * ω) * eom.out * jac.Z * ((-im * ω - jac.T) \ (jac.Z' * eom.dyn.B)) - I)
+    end
+    return S
 end
+
 
 ODEFunction(eom :: ClassicalEOM) = ODEFunction(rhs!; jac = jac!, jac_prototype = zeros(eltype(eom), ndof(eom), ndof(eom)))
 

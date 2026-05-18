@@ -2,18 +2,30 @@ const Mayhaps = Union{Nothing, T} where {T}
 
 @inline uref(f :: Frequency) = (2π * f, 1.0u"ħ", 2.0u"q", 1.0u"k")
 
-function _rowspace_basis(A :: AbstractMatrix{T}) where {T <: Real}
+_is_near_zero(A :: AbstractArray{T}, ε :: Real = 1000 * eps(real(T))) where {T <: Number} = isempty(A) || maximum(abs, A) <= 1000 * ε
+
+"""
+    domain_basis(A)
+
+Returns a tuple of two matrices which correspond to cokernel and kernel of the matrix `A`.
+"""
+function domain_basis(A :: AbstractMatrix{T}) where {T <: Number}
     if size(A, 2) == 0
         return zeros(T, 0, 0)
     end
     decomp = svd(Matrix(A))
-    σmax = isempty(decomp.S) ? zero(T) : maximum(decomp.S)
-    tol = max(size(A)...) * eps(T) * σmax
+    σmax = isempty(decomp.S) ? zero(real(T)) : maximum(decomp.S)
+    tol = max(size(A)...) * eps(real(T)) * σmax
     r = count(>(tol), decomp.S)
-    return Matrix(decomp.V[:, 1 : r])
+    return Matrix(decomp.V[:, 1 : r]), Matrix(decomp.V[:, r + 1 : end])
 end
 
-function _range_null_basis(A :: AbstractMatrix{T}) where {T <: Real}
+"""
+    range_basis(A)
+
+Returns a tuple of two matrices which correspond to cokernel and kernel of the transpose of the matrix `A`.
+"""
+function range_basis(A :: AbstractMatrix{T}) where {T <: Real}
     if size(A, 1) == 0
         return zeros(T, 0, 0), zeros(T, 0, 0)
     end
@@ -21,8 +33,7 @@ function _range_null_basis(A :: AbstractMatrix{T}) where {T <: Real}
     σmax = isempty(decomp.S) ? zero(T) : maximum(decomp.S)
     tol = max(size(A)...) * eps(T) * σmax
     r = count(>(tol), decomp.S)
-    V = Matrix(decomp.V)
-    return V[:, 1 : r], V[:, r + 1 : end]
+    return Matrix(decomp.U[:, 1 : r]), Matrix(decomp.U[:, r + 1 : end])
 end
 
 
