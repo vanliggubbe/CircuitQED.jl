@@ -3,11 +3,13 @@ include("elements/elements.jl")
 mutable struct Circuit
     nd_index :: Dict{Node, Int}
     el_index :: Dict{Tuple{Symbol, Symbol}, Int}
+    port_index :: Dict{Symbol, Int}
     nds :: Vector{Node}
     els :: Vector{Element}
+    port_list :: Vector{Port}
 end
 
-Circuit() = Circuit(Dict(ground() => 1), Dict{Tuple{Symbol, Symbol}, Int}(), [ground()], Element[])
+Circuit() = Circuit(Dict(ground() => 1), Dict{Tuple{Symbol, Symbol}, Int}(), Dict{Symbol, Int}(), [ground()], Element[], Port[])
 
 function Circuit(els)
     circuit = Circuit()
@@ -55,6 +57,10 @@ function add_element!(circuit :: Circuit, el :: Element)
 
     push!(circuit.els, el)
     circuit.el_index[id(el)] = length(circuit.els)
+    if el isa Port
+        push!(circuit.port_list, el)
+        circuit.port_index[el.name] = length(circuit.port_list)
+    end
 
     for node in coordinates(el)
         _add_node!(circuit, node)
@@ -91,6 +97,9 @@ function add_elements!(circuit :: Circuit, els)
     return circuit
 end
 
+@inline ports(circuit :: Circuit) = circuit.port_list
+@inline port_names(circuit :: Circuit) = collect(_port_names(circuit))
+
 ndof(circuit :: Circuit) = maximum(values(circuit.nd_index)) - 1
 @inline node_index(circuit, node :: Node) = circuit.nd_index[node] - 1
 @inline node_index(circuit, node :: Node, default :: Int) = get(circuit.nd_index, node, default + 1) - 1
@@ -107,6 +116,9 @@ function _linear_idxs(circuit :: Circuit, el :: Element)
     end
     return idxs, idxs_el
 end
+
+_port_names(circuit :: Circuit) = (port.name for port in circuit.port_list)
+_port_admittances(circuit :: Circuit) = (inv(port.impedance[]) for port in circuit.port_list)
 
 # printing
 function Base.show(io :: IO, circuit :: Circuit)

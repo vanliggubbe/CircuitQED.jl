@@ -43,7 +43,9 @@ end
         eom = ClassicalEOM(circ, 1u"GHz")
         @test ndof(eom) == size(eom.dyn.A, 1)
         @test size(eom.dyn.B, 2) == 1
-        @test eom.port_index[:drive] == 1
+        @test eom.circuit === circ
+        @test eom.circuit.port_index[:drive] == 1
+        @test eom.circuit.port_list[1] isa Port
 
         u = test_jacobian(eom)
     end
@@ -54,7 +56,8 @@ end
             Port(:p, :n, 50u"Ω")
         ]), 1u"GHz")
         @test ndof(massive) == 2
-        @test massive.port_index[:p] == 1
+        @test massive.circuit.port_index[:p] == 1
+        @test massive.circuit.port_list[1].name == :p
 
         massless = ClassicalEOM(Circuit([
             Inductor(:L, (ground(), :n), 1u"nH"),
@@ -62,7 +65,7 @@ end
             Port(:p, :n, 50u"Ω")
         ]), 1u"GHz")
         @test ndof(massless) == 1
-        @test massless.port_index[:p] == 1
+        @test massless.circuit.port_index[:p] == 1
 
         series = Circuit([
             Inductor(:L1, (ground(), :mid), 1u"nH"),
@@ -78,15 +81,24 @@ end
             Port(:drive, :input, 50u"Ω")
         ]), 1u"GHz")
         @test ndof(capacitive_port) == size(capacitive_port.dyn.A, 1)
-        @test capacitive_port.port_index[:drive] == 1
+        @test capacitive_port.circuit.port_index[:drive] == 1
+
+        u = test_jacobian(capacitive_port)
+        v_in = [0.25]
+        v_out = CircuitQED._output_voltage(capacitive_port, u, v_in)
+        i_out = CircuitQED._output_current(capacitive_port, u, v_in)
+        Y = inv(unitless(capacitive_port.units, capacitive_port.circuit.port_list[1].impedance[]))
+        @test i_out ≈ Y .* (v_out .+ 2 .* v_in)
     end
-    @testset "Linear circuits" begin
+    @testset "S-matrix" begin
         # a linear circuit with both damped mode and cyclic phase
         C = 50u"fF"
         L = 1u"nH"
         L_cpl = 0.05u"nH"
         C_cpl = 1u"fF"
         Z = 50u"Ω"
+        Ic = 20u"nA"
+
         circ = Circuit([
             Capacitor(:C, (:node, ground()), C),
             Inductor(:L, (:node, :cpl_1), L),
@@ -97,7 +109,7 @@ end
         ])
         eom = ClassicalEOM(circ, 1u"GHz")
 
-        function S_matrix(f :: Unitful.Frequency)
+        function S_matrix_1(f :: Unitful.Frequency)
             ω = unitless(eom.units, 2π * f)
             right = -[0.0 0.0; 2.0 0.0; 0.0 2.0] / unitless(eom.units, Z)
             left = [0.0 (-im * ω) 0.0; 0.0 0.0 (-im * ω)]
@@ -121,6 +133,44 @@ end
         fs = LinRange(-10u"GHz", 10u"GHz", 20)
         Ss = scattering_matrix(eom, fs)
         # test S matrix
-        @test all([S ≈ S_matrix(f) for (S, f) in zip(Ss, fs)])
+        @test all([S ≈ S_matrix_1(f) for (S, f) in zip(Ss, fs)])
+
+        circ2 = Circuit([
+            Capacitor(:C, (:node, ground()), C),
+            Inductor(:L, (:node, :cpl_1), L),
+            JoJunction(:J, (:node, ground()), Ic),
+            Inductor(:L_cpl, (:cpl_1, ground()), L_cpl),
+            Capacitor(:C_cpl, (:node, :cpl_2), C_cpl),
+            Port(:port_1, :cpl_1, Z),
+            Port(:port_2, :cpl_2, Z)
+        ])
+        eom2 = ClassicalEOM(circ2, 1u"GHz")
+
+        function S_matrix_2(f :: Unitful.Frequency)
+            ω = unitless(eom.units, 2π * f)
+            right = -[0.0 0.0; 2.0 0.0; 0.0 2.0] / unitless(eom.units, Z)
+            left = [0.0 (-im * ω) 0.0; 0.0 0.0 (-im * ω)]
+            M0 = [
+                unitless(eom.units, -inv(L))        unitless(eom.units, inv(L))                 0.0;
+                unitless(eom.units, inv(L))         unitless(eom.units, -inv(L) - inv(L_cpl))   0.0;
+                0.0                                 0.0                                         0.0
+            ]
+            M0[1, 1] -= unitless(eom.units, Ic)
+            M1 = [
+                0.0 0.0 0.0
+                0.0 1.0 0.0
+                0.0 0.0 1.0
+            ] / unitless(eom.units, Z)
+            M2 = [
+                unitless(eom.units, C + C_cpl)  0.0 unitless(eom.units, -C_cpl);
+                0.0                             0.0 0.0;
+                unitless(eom.units, -C_cpl)     0.0 unitless(eom.units, C_cpl)
+            ]
+            return NamedArray(left * ((M0 + im * ω * M1 + ω ^ 2 * M2) \ right) - I, ([:port_1, :port_2], [:port_1, :port_2]))
+        end
+        fs = LinRange(-10u"GHz", 10u"GHz", 20)
+        Ss = scattering_matrix(eom2, fs)
+        # test S matrix
+        @test all([S ≈ S_matrix_2(f) for (S, f) in zip(Ss, fs)])
     end
 end

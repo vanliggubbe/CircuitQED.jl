@@ -36,6 +36,7 @@ end
 
 struct ClassicalEOM{T <: Real, U <: Tuple{Vararg{Quantity}}}
     units :: U
+    circuit :: Circuit
 
     # Minimal explicit state equation:
     # ẋ = dyn.A * x + dyn.B * v_in(t) +
@@ -47,9 +48,6 @@ struct ClassicalEOM{T <: Real, U <: Tuple{Vararg{Quantity}}}
     #         out.p_nl * sin.(out.q_nl' * x .- dyn.θ_nl).
     out :: AffineSineForm{T}
 
-    # Maps Port element names to rows of the output form.
-    port_index :: Dict{Symbol, Int}
-    port_list :: Vector{Symbol}
 end
 
 ClassicalEOM(circuit :: Circuit, f₀ :: Frequency) = ClassicalEOM(Float64, circuit, f₀)
@@ -81,10 +79,8 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
     q_nl = Matrix{T}(undef, n_raw, 0)
     θ_nl = Vector{T}(undef, 0)
     # ports
-    input = zeros(T, n_raw, sum(x -> x isa Port, circuit.els))
+    input = zeros(T, n_raw, length(circuit.port_list))
     port_voltage = zeros(T, size(input, 2), n_raw)
-    port_index = Dict{Symbol, Int}()
-    port_list = Symbol[]
     units = uref(f₀)
 
     for el in circuit.els
@@ -109,12 +105,11 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
             append!(θ_nl, θ_el)
         end
         if el isa Port
-            push!(port_list, el.name)
+            i_port = circuit.port_index[el.name]
             if !isempty(idxs)
-                input[first(idxs), length(port_list)] = inv(unitless(units, el.impedance[]))
-                port_voltage[length(port_list), first(idxs)] = one(T)
+                input[first(idxs), i_port] = inv(unitless(units, el.impedance[]))
+                port_voltage[i_port, first(idxs)] = one(T)
             end
-            port_index[el.name] = length(port_list)
         end
     end
 
@@ -219,11 +214,12 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
             dyn.θ_nl
         )
     end
-    return ClassicalEOM(units, dyn, out, port_index, port_list)
+    return ClassicalEOM(units, circuit, dyn, out)
 end
 
 Base.eltype(:: ClassicalEOM{T}) where {T} = T
 ndof(eom :: ClassicalEOM) = size(eom.dyn.A, 1)
+_port_admittances(eom :: ClassicalEOM) = (unitless(eom.units, Y) for Y in _port_admittances(eom.circuit))
 
 _rhs0!(f, x :: AbstractVector, eom :: ClassicalEOM) = _eval!(f, eom.dyn, x)
 _jac0!(jac, x :: AbstractVector, eom :: ClassicalEOM) = _jac!(jac, eom.dyn, x)
@@ -268,10 +264,11 @@ Returns a vector of scattering matrices for each frequency in `fs`, assuming the
 function scattering_matrix(eom :: ClassicalEOM, fs; n_newton :: Integer = 10)
     steady = steady_state(eom; n_newton)
     fac = schur(_jac0!(zeros(eltype(eom), ndof(eom), ndof(eom)), steady, eom))
-    out = _jac!(zeros(eltype(eom), length(eom.port_list), ndof(eom)), eom.out, steady) * fac.Z
+    ports = port_names(eom.circuit)
+    out = _jac!(zeros(eltype(eom), length(ports), ndof(eom)), eom.out, steady) * fac.Z
     right = fac.Z' * eom.dyn.B
     return [
-        let ω = 2π * unitless(eom.units, f), ports = eom.port_list, L = fac.T, left = out, right = right, B = eom.out.B
+        let ω = 2π * unitless(eom.units, f), ports = ports, L = fac.T, left = out, right = right, B = eom.out.B
             NamedArray(left * ((-im * ω * I - L) \ right) + B; names = (ports, ports))
         end for f in fs
     ]
@@ -285,9 +282,10 @@ Returns a scattering matrices for frequency `f`, assuming the circuit is in the 
 function scattering_matrix(eom :: ClassicalEOM, f :: Frequency; n_newton :: Integer = 10)
     steady = steady_state(eom; n_newton)
     fac = schur(_jac0!(zeros(eltype(eom), ndof(eom), ndof(eom)), steady, eom))
-    out = _jac!(zeros(eltype(eom), length(eom.port_list), ndof(eom)), eom.out, steady) * fac.Z
+    ports = port_names(eom.circuit)
+    out = _jac!(zeros(eltype(eom), length(ports), ndof(eom)), eom.out, steady) * fac.Z
     right = fac.Z' * eom.dyn.B
-    return let ω = 2π * unitless(eom.units, f), ports = eom.port_list, L = fac.T, left = out, right = right, B = eom.out.B
+    return let ω = 2π * unitless(eom.units, f), ports = ports, L = fac.T, left = out, right = right, B = eom.out.B
         NamedArray(left * ((-im * ω * I - L) \ right) + B; names = (ports, ports))
     end
 end
@@ -298,8 +296,8 @@ ODEFunction(eom :: ClassicalEOM) = ODEFunction(rhs!; jac = jac!, jac_prototype =
 unitless_input(
     units :: Tuple{Vararg{Quantity}}, 
     v_i :: Function, 
-    port_index :: Dict{Symbol, Int}
-) = let v_i = v_i, port_index = port_index, t₀ = unitof(Time, units), units = units
+    circuit :: Circuit
+) = let v_i = v_i, port_index = circuit.port_index, t₀ = unitof(Time, units), units = units
     t -> sparsevec(
         Dict(
             let i = port_index[p], u = u, units = units
@@ -319,36 +317,88 @@ function ODEProblem(eom :: ClassicalEOM, v_i :: Function, tspan :: Tuple{Time, T
             unitless(eom.units, tspan[1]),
             unitless(eom.units, tspan[2])
         ), (
-            eom, unitless_input(eom.units, v_i, eom.port_index)
+            eom, unitless_input(eom.units, v_i, eom.circuit)
         )
     )
 end
 
 _output_voltage(eom :: ClassicalEOM, u, v_in) = eom.out(u, v_in)
+_output_current(eom :: ClassicalEOM, u, v_in) = collect(_port_admittances(eom)) .* (_output_voltage(eom, u, v_in) .+ 2 .* v_in)
 
+"""
+    output_voltage(sol :: ODESolution, t :: Time)
+
+Return output voltages at all ports at time `t`.
+"""
 function output_voltage(sol :: ODESolution, t :: Time)
     (eom, v_i) = sol.prob.p
     t_ul = unitless(eom.units, t)
     V₀ = unitof(u"V", eom.units)
-    return Dict(zip(
-        eom.port_list,
-        _output_voltage(eom, sol(t_ul), v_i(t_ul)) * V₀
-    ))
+    return NamedArray(_output_voltage(eom, sol(t_ul), v_i(t_ul)) * V₀; names = (port_names(eom.circuit), ))
 end
 
+"""
+    output_voltage(sol :: ODESolution, port :: Symbol, t :: Time)
+
+Return output voltage at `port` at time `t`.
+"""
 function output_voltage(sol :: ODESolution, port :: Symbol, t :: Time)
     (eom, v_i) = sol.prob.p
-    i = eom.port_index[port]
+    i = eom.circuit.port_index[port]
     t_ul = unitless(eom.units, t)
     return _output_voltage(eom, sol(t_ul), v_i(t_ul))[i] * unitof(u"V", eom.units)
 end
 
+"""
+    output_voltage(sol :: ODESolution, port :: Symbol, ts)
+
+Return output voltage at `port` for each time in `ts`.
+"""
 function output_voltage(sol :: ODESolution, port :: Symbol, ts)
     (eom, v_i) = sol.prob.p
-    i = eom.port_index[port]
+    i = eom.circuit.port_index[port]
     return [
         let t_ul = unitless(eom.units, t);
             _output_voltage(eom, sol(t_ul), v_i(t_ul))[i]
         end for t in ts
     ] * unitof(u"V", eom.units)
+end
+
+"""
+    output_current(sol :: ODESolution, t :: Time)
+
+Return output currents at all ports at time `t`.
+"""
+function output_current(sol :: ODESolution, t :: Time)
+    (eom, v_i) = sol.prob.p
+    t_ul = unitless(eom.units, t)
+    I₀ = unitof(u"A", eom.units)
+    return NamedArray(_output_current(eom, sol(t_ul), v_i(t_ul)) * I₀; names = (port_names(eom.circuit), ))
+end
+
+"""
+    output_current(sol :: ODESolution, port :: Symbol, t :: Time)
+
+Return output current at `port` at time `t`.
+"""
+function output_current(sol :: ODESolution, port :: Symbol, t :: Time)
+    (eom, v_i) = sol.prob.p
+    i = eom.circuit.port_index[port]
+    t_ul = unitless(eom.units, t)
+    return _output_current(eom, sol(t_ul), v_i(t_ul))[i] * unitof(u"A", eom.units)
+end
+
+"""
+    output_current(sol :: ODESolution, port :: Symbol, ts)
+
+Return output current at `port` for each time in `ts`.
+"""
+function output_current(sol :: ODESolution, port :: Symbol, ts)
+    (eom, v_i) = sol.prob.p
+    i = eom.circuit.port_index[port]
+    return [
+        let t_ul = unitless(eom.units, t);
+            _output_current(eom, sol(t_ul), v_i(t_ul))[i]
+        end for t in ts
+    ] * unitof(u"A", eom.units)
 end
