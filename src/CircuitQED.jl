@@ -5,8 +5,10 @@ import Unitful: Quantity, Capacitance, Inductance, ElectricalResistance, Tempera
 import LessUnits: unitless, unitof
 import SpecialFunctions: besselj1, besselj0, besselj
 import SciMLBase: ODEFunction, ODEProblem, ODESolution
+import SparseArrays: sparsevec
 import ArgCheck: @argcheck
 import FFTW: fft!, ifft!
+import NamedArrays: NamedArray
 
 export uref
 include("utils.jl")

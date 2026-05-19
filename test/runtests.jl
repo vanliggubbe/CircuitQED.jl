@@ -4,6 +4,7 @@ using LessUnits
 using SciMLBase
 using LinearAlgebra
 using Test
+using NamedArrays
 
 function test_jacobian(eom; ε :: Real = 1e-4)
     v_i(_) = zeros(size(eom.dyn.B, 2))
@@ -42,11 +43,9 @@ end
         eom = ClassicalEOM(circ, 1u"GHz")
         @test ndof(eom) == size(eom.dyn.A, 1)
         @test size(eom.dyn.B, 2) == 1
-        @test size(eom.out, 1) == 1
         @test eom.port_index[:drive] == 1
 
         u = test_jacobian(eom)
-        @test length(output_voltage(eom, u, [0.0])) == size(eom.out, 1)
     end
     @testset "Classical reductions" begin
         massive = ClassicalEOM(Circuit([
@@ -56,7 +55,6 @@ end
         ]), 1u"GHz")
         @test ndof(massive) == 2
         @test massive.port_index[:p] == 1
-        @test length(output_voltage(massive, test_jacobian(massive), [0.0])) == size(massive.out, 1)
 
         massless = ClassicalEOM(Circuit([
             Inductor(:L, (ground(), :n), 1u"nH"),
@@ -65,7 +63,6 @@ end
         ]), 1u"GHz")
         @test ndof(massless) == 1
         @test massless.port_index[:p] == 1
-        @test length(output_voltage(massless, test_jacobian(massless), [0.0])) == size(massless.out, 1)
 
         series = Circuit([
             Inductor(:L1, (ground(), :mid), 1u"nH"),
@@ -81,8 +78,49 @@ end
             Port(:drive, :input, 50u"Ω")
         ]), 1u"GHz")
         @test ndof(capacitive_port) == size(capacitive_port.dyn.A, 1)
-        @test size(capacitive_port.out, 1) == 1
         @test capacitive_port.port_index[:drive] == 1
-        @test length(output_voltage(capacitive_port, test_jacobian(capacitive_port), [0.0])) == size(capacitive_port.out, 1)
+    end
+    @testset "Linear circuits" begin
+        # a linear circuit with both damped mode and cyclic phase
+        C = 50u"fF"
+        L = 1u"nH"
+        L_cpl = 0.05u"nH"
+        C_cpl = 1u"fF"
+        Z = 50u"Ω"
+        circ = Circuit([
+            Capacitor(:C, (:node, ground()), C),
+            Inductor(:L, (:node, :cpl_1), L),
+            Inductor(:L_cpl, (:cpl_1, ground()), L_cpl),
+            Capacitor(:C_cpl, (:node, :cpl_2), C_cpl),
+            Port(:port_1, :cpl_1, Z),
+            Port(:port_2, :cpl_2, Z)
+        ])
+        eom = ClassicalEOM(circ, 1u"GHz")
+
+        function S_matrix(f :: Unitful.Frequency)
+            ω = unitless(eom.units, 2π * f)
+            right = -[0.0 0.0; 2.0 0.0; 0.0 2.0] / unitless(eom.units, Z)
+            left = [0.0 (-im * ω) 0.0; 0.0 0.0 (-im * ω)]
+            M0 = [
+                unitless(eom.units, -inv(L))        unitless(eom.units, inv(L))                 0.0;
+                unitless(eom.units, inv(L))         unitless(eom.units, -inv(L) - inv(L_cpl))   0.0;
+                0.0                                 0.0                                         0.0
+            ]
+            M1 = [
+                0.0 0.0 0.0
+                0.0 1.0 0.0
+                0.0 0.0 1.0
+            ] / unitless(eom.units, Z)
+            M2 = [
+                unitless(eom.units, C + C_cpl)  0.0 unitless(eom.units, -C_cpl);
+                0.0                             0.0 0.0;
+                unitless(eom.units, -C_cpl)     0.0 unitless(eom.units, C_cpl)
+            ]
+            return NamedArray(left * ((M0 + im * ω * M1 + ω ^ 2 * M2) \ right) - I, ([:port_1, :port_2], [:port_1, :port_2]))
+        end
+        fs = LinRange(-10u"GHz", 10u"GHz", 20)
+        Ss = scattering_matrix(eom, fs)
+        # test S matrix
+        @test all([S ≈ S_matrix(f) for (S, f) in zip(Ss, fs)])
     end
 end
