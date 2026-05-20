@@ -5,6 +5,7 @@ using SciMLBase
 using LinearAlgebra
 using Test
 using NamedArrays
+using OrdinaryDiffEq
 
 function test_jacobian(eom; ε :: Real = 1e-4)
     v_i(_) = zeros(size(eom.dyn.B, 2))
@@ -28,6 +29,52 @@ function test_jacobian(eom; ε :: Real = 1e-4)
     jac_fd ./= ε
     @test norm(jac_fd - jac_ex) < ε
     return u
+end
+
+function relative_infnorm_error(numerical, exact)
+    return maximum(abs, numerical .- exact) / maximum(abs, exact)
+end
+
+function test_linear_rcl_dynamics(C, L, R, v0, f, t_int, threshold)
+    circ = Circuit([
+        Capacitor(:C, (:node, ground()), C),
+        Inductor(:L, (:node, ground()), L),
+        Port(:R, :node, R)
+    ])
+    eom = ClassicalEOM(circ, 1u"GHz")
+    units = eom.units
+    Ω = unitless(units, 2π * f)
+    γ = unitless(units, inv(R * C))
+    ω0² = unitless(units, inv(L * C))
+    v0_ul = unitless(units, v0)
+    R_ul = unitless(units, R)
+
+    A = [0.0 1.0; -ω0² -γ]
+    b = [0.0, 2γ * v0_ul]
+    z = (im * Ω * I - A) \ b
+    x₀ = zeros(ndof(eom))
+
+    v_i(t) = Dict(:R => v0 * sin(2π * f * t))
+    prob = ODEProblem(eom, v_i, (0u"s", t_int), x₀)
+    sol = solve(prob, Vern7(); reltol = 1e-10, abstol = 1e-12)
+
+    ts = [t_int * (i - 1) / 299 for i in 1 : 300]
+    v_exact = Float64[]
+    i_exact = Float64[]
+    for t in ts
+        t_ul = unitless(units, t)
+        x = imag.(z * exp(im * Ω * t_ul)) - exp(A * t_ul) * imag.(z)
+        v_node = x[2]
+        v_in = v0_ul * sin(Ω * t_ul)
+        push!(v_exact, v_node - v_in)
+        push!(i_exact, (v_node + v_in) / R_ul)
+    end
+
+    v_ode = [unitless(units, output_voltage(sol, :R, t)) for t in ts]
+    i_ode = [unitless(units, output_current(sol, :R, t)) for t in ts]
+
+    @test relative_infnorm_error(v_ode, v_exact) < threshold
+    @test relative_infnorm_error(i_ode, i_exact) < threshold
 end
 
 @testset "CircuitQED.jl" begin
@@ -172,5 +219,11 @@ end
         Ss = scattering_matrix(eom2, fs)
         # test S matrix
         @test all([S ≈ S_matrix_2(f) for (S, f) in zip(Ss, fs)])
+    end
+    @testset "Linear time dynamics" begin
+        test_linear_rcl_dynamics(50u"fF", 1u"nH", 50u"Ω", 1u"μV", 2u"GHz", 20u"ns", 1e-5)
+        test_linear_rcl_dynamics(50u"fF", 1u"nH", 50u"kΩ", 1u"μV", 20u"GHz", 20u"ns", 1e-5)
+        test_linear_rcl_dynamics(80u"fF", 2u"nH", 1000u"Ω", 2u"μV", 5u"GHz", 30u"ns", 1e-5)
+        test_linear_rcl_dynamics(200u"fF", 0.2u"nH", 30u"kΩ", 2u"μV", 5u"GHz", 30u"ns", 1e-5)
     end
 end
