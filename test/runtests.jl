@@ -85,6 +85,38 @@ function steady_residual(eom, x, v_i = ())
     return norm(eom.dyn(x, v)) / max(norm(x), one(eltype(eom)))
 end
 
+function cpw_filter_smatrix_exact(units, f, C1, C2, Z, Z_f, f_hw)
+    ω = unitless(units, 2π * f)
+    C1u = unitless(units, C1)
+    C2u = unitless(units, C2)
+    Y = inv(unitless(units, Z))
+    Yf = inv(unitless(units, Z_f))
+    θ = π * unitless(units, f) / unitless(units, f_hw)
+    cotθ = cot(θ)
+    cscθ = inv(sin(θ))
+
+    # Node order: in, f_in, f_out, out.
+    M = zeros(ComplexF64, 4, 4)
+    M[1, 1] += im * Y
+    M[4, 4] += im * Y
+
+    for (a, b, C) in ((1, 2, C1u), (3, 4, C2u))
+        y = ω * C
+        M[a, a] += y
+        M[b, b] += y
+        M[a, b] -= y
+        M[b, a] -= y
+    end
+
+    M[2 : 3, 2 : 3] .+= Yf * [-cotθ cscθ; cscθ -cotθ]
+
+    right = zeros(ComplexF64, 4, 2)
+    right[1, 1] = -2Y
+    right[4, 2] = -2Y
+    left = [-1.0im 0.0 0.0 0.0; 0.0 0.0 0.0 -1.0im]
+    return NamedArray(left * (M \ right) - I, ([:in, :out], [:in, :out]))
+end
+
 @testset "CircuitQED.jl" begin
     unit_ref = (2π * 1.0u"GHz", 1.0u"ħ", 2.0u"q", 1.0u"k")
     circ = Circuit([
@@ -241,6 +273,23 @@ end
         Ss = scattering_matrix(eom2, fs)
         # test S matrix
         @test all([S ≈ S_matrix_2(f) for (S, f) in zip(Ss, fs)])
+
+        C1 = 5u"fF"
+        C2 = 7u"fF"
+        Z_f = 80u"Ω"
+        f_hw = 10u"GHz"
+        n = 80
+        circ3 = Circuit([
+            Capacitor(:C1, (:in, :f_in), C1),
+            Capacitor(:C2, (:out, :f_out), C2),
+            CPWPiece(:filter, (:f_in, :f_out), Z_f, f_hw, n),
+            Port(:in, :in, Z),
+            Port(:out, :out, Z)
+        ])
+        eom3 = ClassicalEOM(circ3, 1u"GHz")
+        fs = [1.1, 2.3, 3.5, 5.7, 7.4, 8.6] .* 1u"GHz"
+        Ss = scattering_matrix(eom3, fs)
+        @test all([isapprox(S, cpw_filter_smatrix_exact(eom3.units, f, C1, C2, Z, Z_f, f_hw); rtol = 1e-4, atol = 1e-6) for (S, f) in zip(Ss, fs)])
     end
     @testset "Linear time dynamics" begin
         test_linear_rcl_dynamics(50u"fF", 1u"nH", 50u"Ω", 1u"μV", 2u"GHz", 20u"ns", 1e-5)

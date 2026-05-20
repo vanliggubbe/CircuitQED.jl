@@ -145,14 +145,6 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
                 θ_nl
             )
 
-            #=
-            display(K3)
-            display(K2)
-            display(K1)
-            display(input)
-            display(port_voltage)
-            =#
-
             # deal with damped modes
             M2 = factorize(K2[rk + 1 : end, rk + 1 : end])
             dyn.A[1 : rk, n_φ + 1 : n_φ + rk] = I(rk)
@@ -198,7 +190,6 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
     cokernel, kernel = domain_basis([dyn.A; dyn.q_nl'])
     if size(kernel, 2) > 0
         # there are cyclic degrees of freedom
-        
         dyn = AffineSineForm(
             cokernel' * dyn.A * cokernel,
             cokernel' * dyn.B,
