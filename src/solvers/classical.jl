@@ -224,6 +224,16 @@ _port_admittances(eom :: ClassicalEOM) = (unitless(eom.units, Y) for Y in _port_
 _rhs0!(f, x :: AbstractVector, eom :: ClassicalEOM) = _eval!(f, eom.dyn, x)
 _jac0!(jac, x :: AbstractVector, eom :: ClassicalEOM) = _jac!(jac, eom.dyn, x)
 
+_unitless_input_vector(units, v_i, port_index :: AbstractDict{Symbol, Int}, dim :: Int) = sparsevec(
+    Dict(
+        let i = port_index[p], u = u, units = units
+            @argcheck u isa Voltage
+            i => unitless(units, u)
+        end
+        for (p, u) in v_i
+    ), dim
+)
+
 function rhs!(du, u, par :: Tuple{ClassicalEOM, Function}, t)
     eom, v_i = par
     return _eval!(du, eom.dyn, u, v_i(t))
@@ -236,33 +246,41 @@ end
 
 
 """
-    steady_state(eom :: ClassicalEOM; n_newton :: Integer = 10)
+    steady_state(eom :: ClassicalEOM, v_i = (); init = zeros(eltype(eom), ndof(eom)), reltol = sqrt(eps(eltype(eom))), kwargs...)
 
-Finds a stationary solution of the explicit state equation using Newton method. Optional parameter `n_newton` defines number of iterations.
+Find a stationary solution for constant input voltages. `v_i` may be any iterable of `port => voltage` pairs.
+Extra keyword arguments are passed to `NonlinearSolve.solve`. Throws an error if the final relative residual norm exceeds `reltol`.
 """
-function steady_state(eom :: ClassicalEOM{T}; n_newton :: Integer = 10) where {T}
-    @argcheck n_newton > 0
-    x = zeros(T, ndof(eom))
-    y = similar(x)
-    f = similar(x)
-    jac = zeros(T, ndof(eom), ndof(eom))
-    for _ in 1 : n_newton
-        _rhs0!(f, x, eom)
-        _jac0!(jac, x, eom)
-        fac = lu!(jac)
-        ldiv!(y, fac, f)
-        x .-= y
+function steady_state(eom :: ClassicalEOM{T}, v_i = (p.name => 0.0u"V" for p in eom.circuit.port_list); init = zeros(T, ndof(eom)), reltol :: Real = sqrt(eps(T)), kwargs...) where {T}
+    v_in = _unitless_input_vector(eom.units, v_i, eom.circuit.port_index, length(eom.circuit.port_list))
+
+    function f!(res, x, _)
+        return _eval!(res, eom.dyn, x, v_in)
+    end
+    function j!(jac, x, _)
+        return _jac!(jac, eom.dyn, x)
+    end
+
+    fun = NonlinearFunction(f!; jac = j!)
+    prob = NonlinearSolve.NonlinearProblem(fun, init, nothing)
+    sol = NonlinearSolve.solve(prob; kwargs...)
+    x = sol.u
+    res = similar(x)
+    _eval!(res, eom.dyn, x, v_in)
+    relres = norm(res) / max(norm(x), one(T))
+    if !(relres < reltol)
+        error("Steady state solve did not converge: relative residual $(relres) exceeds $(reltol)")
     end
     return x
 end
 
 """
-    scattering_matrix(eom :: ClassicalEOM, fs; n_newton :: Integer = 10)
+    scattering_matrix(eom :: ClassicalEOM, fs; kwargs...)
 
-Returns a vector of scattering matrices for each frequency in `fs`, assuming the circuit is in the steady state. Optional parameter `n_newton` is passed to the `steady_state` call.
+Returns a vector of scattering matrices for each frequency in `fs`, assuming the circuit is in the steady state. Keyword arguments are passed to `steady_state`.
 """
-function scattering_matrix(eom :: ClassicalEOM, fs; n_newton :: Integer = 10)
-    steady = steady_state(eom; n_newton)
+function scattering_matrix(eom :: ClassicalEOM, fs; kwargs...)
+    steady = steady_state(eom; kwargs...)
     fac = schur(_jac0!(zeros(eltype(eom), ndof(eom), ndof(eom)), steady, eom))
     ports = port_names(eom.circuit)
     out = _jac!(zeros(eltype(eom), length(ports), ndof(eom)), eom.out, steady) * fac.Z
@@ -275,12 +293,12 @@ function scattering_matrix(eom :: ClassicalEOM, fs; n_newton :: Integer = 10)
 end
 
 """
-    scattering_matrix(eom :: ClassicalEOM, f :: Unitful.Frequency; n_newton :: Integer = 10)
+    scattering_matrix(eom :: ClassicalEOM, f :: Unitful.Frequency; kwargs...)
 
-Returns a scattering matrices for frequency `f`, assuming the circuit is in the steady state. Optional parameter `n_newton` is passed to the `steady_state` call.
+Returns a scattering matrix for frequency `f`, assuming the circuit is in the steady state. Keyword arguments are passed to `steady_state`.
 """
-function scattering_matrix(eom :: ClassicalEOM, f :: Frequency; n_newton :: Integer = 10)
-    steady = steady_state(eom; n_newton)
+function scattering_matrix(eom :: ClassicalEOM, f :: Frequency; kwargs...)
+    steady = steady_state(eom; kwargs...)
     fac = schur(_jac0!(zeros(eltype(eom), ndof(eom), ndof(eom)), steady, eom))
     ports = port_names(eom.circuit)
     out = _jac!(zeros(eltype(eom), length(ports), ndof(eom)), eom.out, steady) * fac.Z
@@ -297,21 +315,13 @@ unitless_input(
     units :: Tuple{Vararg{Quantity}}, 
     v_i :: Function, 
     circuit :: Circuit
-) = let v_i = v_i, port_index = circuit.port_index, t₀ = unitof(Time, units), units = units
-    t -> sparsevec(
-        Dict(
-            let i = port_index[p], u = u, units = units
-                @argcheck u isa Voltage
-                i => unitless(units, u)
-            end
-            for (p, u) in v_i(t * t₀)
-        )
-    )
+) = let v_i = v_i, port_index = circuit.port_index, t₀ = unitof(Time, units), units = units, dim = length(circuit.port_list)
+    t -> _unitless_input_vector(units, v_i(t * t₀), port_index, dim)
 end
 
-function ODEProblem(eom :: ClassicalEOM, v_i :: Function, tspan :: Tuple{Time, Time}, init = nothing; n_newton :: Integer = 10)
+function ODEProblem(eom :: ClassicalEOM, v_i :: Function, tspan :: Tuple{Time, Time}, init = nothing)
     fun = ODEFunction(eom)
-    x₀ = (init isa Nothing ? steady_state(eom; n_newton) : init)
+    x₀ = (init isa Nothing ? steady_state(eom) : init)
     return ODEProblem{true}(
         fun, x₀, (
             unitless(eom.units, tspan[1]),

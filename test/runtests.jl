@@ -77,6 +77,14 @@ function test_linear_rcl_dynamics(C, L, R, v0, f, t_int, threshold)
     @test relative_infnorm_error(i_ode, i_exact) < threshold
 end
 
+function steady_residual(eom, x, v_i = ())
+    v = zeros(eltype(eom), size(eom.dyn.B, 2))
+    for (p, u) in v_i
+        v[eom.circuit.port_index[p]] = unitless(eom.units, u)
+    end
+    return norm(eom.dyn(x, v)) / max(norm(x), one(eltype(eom)))
+end
+
 @testset "CircuitQED.jl" begin
     unit_ref = (2π * 1.0u"GHz", 1.0u"ħ", 2.0u"q", 1.0u"k")
     circ = Circuit([
@@ -95,6 +103,20 @@ end
         @test eom.circuit.port_list[1] isa Port
 
         u = test_jacobian(eom)
+    end
+    @testset "Steady state" begin
+        eom = ClassicalEOM(circ, 1u"GHz")
+        x0 = steady_state(eom; reltol = 1e-10)
+        @test steady_residual(eom, x0) < 1e-10
+
+        x_tuple = steady_state(eom, (:drive => 1u"μV",); reltol = 1e-10)
+        @test steady_residual(eom, x_tuple, (:drive => 1u"μV",)) < 1e-10
+
+        input_dict = Dict(:drive => 2u"μV")
+        x_dict = steady_state(eom, input_dict; reltol = 1e-10)
+        @test steady_residual(eom, x_dict, input_dict) < 1e-10
+
+        @test_throws ErrorException steady_state(eom, (:drive => 1u"μV",); init = zeros(ndof(eom)), maxiters = 0, reltol = 1e-14)
     end
     @testset "Classical reductions" begin
         massive = ClassicalEOM(Circuit([

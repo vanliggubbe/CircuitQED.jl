@@ -1,10 +1,10 @@
 module CircuitQED
 
-import LinearAlgebra: Diagonal, I, mul!, axpy!, factorize, ldiv!, lu!, svd, rank, schur
+import LinearAlgebra: Diagonal, I, mul!, axpy!, factorize, ldiv!, lu!, norm, svd, rank, schur
 import Unitful: Quantity, Capacitance, Inductance, ElectricalResistance, Temperature, Frequency, Current, MagneticFlux, Energy, Time, Voltage, @u_str, uconvert
 import LessUnits: unitless, unitof
-import SpecialFunctions: besselj1, besselj0, besselj
-import SciMLBase: ODEFunction, ODEProblem, ODESolution
+import SciMLBase: NonlinearFunction, ODEFunction, ODEProblem, ODESolution
+import NonlinearSolve
 import SparseArrays: sparsevec
 import ArgCheck: @argcheck
 import FFTW: fft!, ifft!
