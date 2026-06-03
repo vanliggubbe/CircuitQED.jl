@@ -3,13 +3,22 @@ include("elements/elements.jl")
 mutable struct Circuit
     nd_index :: Dict{Node, Int}
     el_index :: Dict{Tuple{Symbol, Symbol}, Int}
-    port_index :: Dict{Symbol, Int}
     nds :: Vector{Node}
     els :: Vector{Element}
+    port_index :: Dict{Symbol, Int}
     port_list :: Vector{Port}
+    resistor_index :: Dict{Symbol, Int}
 end
 
-Circuit() = Circuit(Dict(ground() => 1), Dict{Tuple{Symbol, Symbol}, Int}(), Dict{Symbol, Int}(), [ground()], Element[], Port[])
+Circuit() = Circuit(
+    Dict(ground() => 1),
+    Dict{Tuple{Symbol, Symbol}, Int}(),
+    [ground()],
+    Element[],
+    Dict{Symbol, Int}(),
+    Port[],
+    Dict{Symbol, Int}()
+)
 
 function Circuit(els)
     circuit = Circuit()
@@ -60,6 +69,8 @@ function add_element!(circuit :: Circuit, el :: Element)
     if el isa Port
         push!(circuit.port_list, el)
         circuit.port_index[el.name] = length(circuit.port_list)
+    elseif el isa Resistor
+        circuit.resistor_index[el.name] = length(circuit.resistor_index) + 1
     end
 
     for node in coordinates(el)
@@ -100,7 +111,7 @@ end
 @inline ports(circuit :: Circuit) = circuit.port_list
 @inline port_names(circuit :: Circuit) = collect(_port_names(circuit))
 
-ndof(circuit :: Circuit) = maximum(values(circuit.nd_index)) - 1
+@inline ndof(circuit :: Circuit) = maximum(values(circuit.nd_index)) - 1
 @inline node_index(circuit, node :: Node) = circuit.nd_index[node] - 1
 @inline node_index(circuit, node :: Node, default :: Int) = get(circuit.nd_index, node, default + 1) - 1
 
@@ -119,6 +130,7 @@ end
 
 _port_names(circuit :: Circuit) = (port.name for port in circuit.port_list)
 _port_admittances(circuit :: Circuit) = (inv(port.impedance[]) for port in circuit.port_list)
+_resistor_names(circuit :: Circuit) = map(x -> first(x), sort!([last(x) => first(x) for x in circuit.resistor_index]))
 
 # printing
 function Base.show(io :: IO, circuit :: Circuit)

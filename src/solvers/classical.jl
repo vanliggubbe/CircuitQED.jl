@@ -48,6 +48,10 @@ struct ClassicalEOM{T <: Real, U <: Tuple{Vararg{Quantity}}}
     #         out.p_nl * sin.(out.q_nl' * x .- dyn.θ_nl).
     out :: AffineSineForm{T}
 
+    # Voltage accross each of the resistors
+    # used to calculate Joule losses
+    jls :: AffineSineForm{T}
+
 end
 
 ClassicalEOM(circuit :: Circuit, f₀ :: Frequency) = ClassicalEOM(Float64, circuit, f₀)
@@ -81,6 +85,7 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
     # ports
     input = zeros(T, n_raw, length(circuit.port_list))
     port_voltage = zeros(T, size(input, 2), n_raw)
+    resistor_voltage = zeros(T, length(circuit.resistor_index), n_raw)
     units = uref(f₀)
 
     for el in circuit.els
@@ -110,6 +115,12 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
                 input[first(idxs), i_port] = inv(unitless(units, el.impedance[]))
                 port_voltage[i_port, first(idxs)] = one(T)
             end
+        elseif el isa Resistor
+            # TODO make it better
+            i_res = circuit.resistor_index[el.name]
+            r = sqrt(unitless(units, el.resistance[]))
+            resistor_voltage[i_res, first(idxs)] = -inv(r)
+            resistor_voltage[i_res,  last(idxs)] =  inv(r)
         end
     end
 
@@ -119,11 +130,12 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
     
     local dyn
     local out
-    if rank(K[3]) < size(K[3], 1)
+    local jls
+    rk = rank(K[3])
+    if rk < size(K[3], 1)
         # we have damped modes
         # or even algebraic conditions
         U, S, V = svd(K[3])
-        rk = rank(Diagonal(S))
 
         # transform to coordinates which diagonalize massive part
         K3 = Diagonal(S)[1 : rk, 1 : rk]
@@ -132,7 +144,8 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
         q_nl = V' * q_nl
         p_nl = U' * p_nl
         input = U' * input
-        port_voltage = port_voltage * V
+        port_voltage        = port_voltage * V
+        resistor_voltage    = resistor_voltage * V
 
         if rank(K2[rk + 1 : end, rk + 1 : end]) == n_φ - rk
             # only damped modes
@@ -165,6 +178,9 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
 
             tmp = hcat(port_voltage, zeros(T, size(input, 2), rk))
             out = AffineSineForm(tmp * dyn.A, tmp * dyn.B - I, tmp * dyn.p_nl, dyn.q_nl, dyn.θ_nl)
+
+            tmp = hcat(resistor_voltage, zeros(T, size(resistor_voltage, 1), rk))
+            jls = AffineSineForm(tmp * dyn.A, tmp * dyn.B, tmp * dyn.p_nl, dyn.q_nl, dyn.θ_nl)
         else
             # there are algebraic constraints
             error("Circuits with algebraic constraints are not supported yet")
@@ -185,6 +201,9 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
         )
         tmp = hcat(port_voltage, zeros(T, size(input, 2), n_v))
         out = AffineSineForm(tmp * dyn.A, tmp * dyn.B - I, tmp * dyn.p_nl, dyn.q_nl, dyn.θ_nl)
+
+        tmp = hcat(resistor_voltage, zeros(T, size(resistor_voltage, 1), n_v))
+        jls = AffineSineForm(tmp * dyn.A, tmp * dyn.B, tmp * dyn.p_nl, dyn.q_nl, dyn.θ_nl)
     end
 
     cokernel, kernel = domain_basis([dyn.A; dyn.q_nl'])
@@ -204,8 +223,15 @@ function ClassicalEOM(:: Type{T}, circuit :: Circuit, f₀ :: Frequency) where {
             dyn.q_nl,
             dyn.θ_nl
         )
+        jls = AffineSineForm(
+            jls.A * cokernel,
+            jls.B,
+            jls.p_nl,
+            dyn.q_nl,
+            dyn.θ_nl
+        )
     end
-    return ClassicalEOM(units, circuit, dyn, out)
+    return ClassicalEOM(units, circuit, dyn, out, jls)
 end
 
 Base.eltype(:: ClassicalEOM{T}) where {T} = T
@@ -325,6 +351,7 @@ end
 
 _output_voltage(eom :: ClassicalEOM, u, v_in) = eom.out(u, v_in)
 _output_current(eom :: ClassicalEOM, u, v_in) = collect(_port_admittances(eom)) .* (_output_voltage(eom, u, v_in) .+ 2 .* v_in)
+_joule_losses(eom :: ClassicalEOM, u, v_in) = eom.jls(u, v_in) .^ 2
 
 """
     output_voltage(sol :: ODESolution, t :: Time)
@@ -338,26 +365,30 @@ function output_voltage(sol :: ODESolution, t :: Time)
     return NamedArray(_output_voltage(eom, sol(t_ul), v_i(t_ul)) * V₀; names = (port_names(eom.circuit), ))
 end
 
+_port_name(x) = Symbol(x)
+_port_name(x :: Symbol) = x
+_port_name(x :: Port) = x.name
+
 """
-    output_voltage(sol :: ODESolution, port :: Symbol, t :: Time)
+    output_voltage(sol :: ODESolution, port, t :: Time)
 
 Return output voltage at `port` at time `t`.
 """
-function output_voltage(sol :: ODESolution, port :: Symbol, t :: Time)
+function output_voltage(sol :: ODESolution, port, t :: Time)
     (eom, v_i) = sol.prob.p
-    i = eom.circuit.port_index[port]
+    i = eom.circuit.port_index[_port_name(port)]
     t_ul = unitless(eom.units, t)
     return _output_voltage(eom, sol(t_ul), v_i(t_ul))[i] * unitof(u"V", eom.units)
 end
 
 """
-    output_voltage(sol :: ODESolution, port :: Symbol, ts)
+    output_voltage(sol :: ODESolution, port, ts)
 
 Return output voltage at `port` for each time in `ts`.
 """
-function output_voltage(sol :: ODESolution, port :: Symbol, ts)
+function output_voltage(sol :: ODESolution, port, ts)
     (eom, v_i) = sol.prob.p
-    i = eom.circuit.port_index[port]
+    i = eom.circuit.port_index[_port_name(port)]
     return [
         let t_ul = unitless(eom.units, t);
             _output_voltage(eom, sol(t_ul), v_i(t_ul))[i]
@@ -378,28 +409,72 @@ function output_current(sol :: ODESolution, t :: Time)
 end
 
 """
-    output_current(sol :: ODESolution, port :: Symbol, t :: Time)
+    output_current(sol :: ODESolution, port, t :: Time)
 
 Return output current at `port` at time `t`.
 """
-function output_current(sol :: ODESolution, port :: Symbol, t :: Time)
+function output_current(sol :: ODESolution, port, t :: Time)
     (eom, v_i) = sol.prob.p
-    i = eom.circuit.port_index[port]
+    i = eom.circuit.port_index[_port_name(port)]
     t_ul = unitless(eom.units, t)
     return _output_current(eom, sol(t_ul), v_i(t_ul))[i] * unitof(u"A", eom.units)
 end
 
 """
-    output_current(sol :: ODESolution, port :: Symbol, ts)
+    output_current(sol :: ODESolution, port, ts)
 
 Return output current at `port` for each time in `ts`.
 """
-function output_current(sol :: ODESolution, port :: Symbol, ts)
+function output_current(sol :: ODESolution, port, ts)
     (eom, v_i) = sol.prob.p
-    i = eom.circuit.port_index[port]
+    i = eom.circuit.port_index[_port_name(port)]
     return [
         let t_ul = unitless(eom.units, t);
             _output_current(eom, sol(t_ul), v_i(t_ul))[i]
         end for t in ts
     ] * unitof(u"A", eom.units)
+end
+
+"""
+    joule_losses(sol :: ODESolution, t :: Time)
+
+Return power of Joule losses at all resistors at time `t`.
+"""
+function joule_losses(sol :: ODESolution, t :: Time)
+    (eom, v_i) = sol.prob.p
+    t_ul = unitless(eom.units, t)
+    P₀ = unitof(u"W", eom.units)
+    return NamedArray(_joule_losses(eom, sol(t_ul), v_i(t_ul)) * P₀; names = (_resistor_names(eom.circuit), ))
+end
+
+
+_resistor_name(x) = Symbol(x)
+_resistor_name(x :: Symbol) = x
+_resistor_name(x :: Resistor) = x.name
+
+"""
+    joule_losses(sol :: ODESolution, resistor, t :: Time)
+
+Return power of Joule losses at `resistor` at time `t`.
+"""
+function joule_losses(sol :: ODESolution, res, t :: Time)
+    (eom, v_i) = sol.prob.p
+    i = eom.circuit.resistor_index[_resistor_name(res)]
+    t_ul = unitless(eom.units, t)
+    return _joule_losses(eom, sol(t_ul), v_i(t_ul))[i] * unitof(u"W", eom.units)
+end
+
+"""
+    joule_losses(sol :: ODESolution, resistor, ts)
+
+Return power of Joule losses at `resistor` for each time in `ts`.
+"""
+function joule_losses(sol :: ODESolution, res, ts)
+    (eom, v_i) = sol.prob.p
+    i = eom.circuit.resistor_index[_resistor_name(res)]
+    return [
+        let t_ul = unitless(eom.units, t);
+            _joule_losses(eom, sol(t_ul), v_i(t_ul))[i]
+        end for t in ts
+    ] * unitof(u"W", eom.units)
 end

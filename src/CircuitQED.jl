@@ -18,7 +18,7 @@ export Circuit, ground, add_element!, add_elements!, port_names, ports
 export Capacitor, Inductor, Resistor, Port, JoJunction, CPWPiece, SNAIL, Short
 include("circuits.jl")
 
-export ClassicalEOM, steady_state, scattering_matrix, output_voltage, output_current
+export ClassicalEOM, steady_state, scattering_matrix, output_voltage, output_current, joule_losses
 include("solvers/solvers.jl")
 
 end
