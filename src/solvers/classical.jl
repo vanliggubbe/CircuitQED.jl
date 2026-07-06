@@ -1,57 +1,20 @@
-struct AffineSineForm{T <: Real}
-    # y = A * x + B * u + p_nl * sin.(q_nl' * x .- θ_nl)
-    A :: Matrix{T}
-    B :: Matrix{T}
-    p_nl :: Matrix{T}
-    q_nl :: Matrix{T}
-    θ_nl :: Vector{T}
-end
-
-function _eval!(y, form :: AffineSineForm, x)
-    mul!(y, form.A, x)
-    for (p, q, θ) in zip(eachcol(form.p_nl), eachcol(form.q_nl), form.θ_nl)
-        axpy!(sin(q' * x - θ), p, y)
-    end
-    return y
-end
-
-function _eval!(y, form :: AffineSineForm, x, u)
-    _eval!(y, form, x)
-    mul!(y, form.B, u, one(eltype(y)), one(eltype(y)))
-    return y
-end
-
-function _jac!(jac, form :: AffineSineForm, x)
-    jac .= form.A
-    for (p, q, θ) in zip(eachcol(form.p_nl), eachcol(form.q_nl), form.θ_nl)
-        mul!(jac, p, q', cos(q' * x - θ), one(eltype(jac)))
-    end
-    return jac
-end
-
-function (f :: AffineSineForm)(x, u)
-    y = Vector{promote_type(eltype(x), eltype(u))}(undef, size(f.A, 1))
-    return _eval!(y, f, x, u)
-end
-
-struct ClassicalEOM{T <: Real, U <: Tuple{Vararg{Quantity}}}
+struct ClassicalEOM{T <: Real, U <: Tuple{Vararg{Quantity}}, FD <: AffineSineForm{T}, FO <: AffineSineForm{T}, FJ <: AffineSineForm{T}}
     units :: U
     circuit :: Circuit
 
     # Minimal explicit state equation:
     # ẋ = dyn.A * x + dyn.B * v_in(t) +
     #     dyn.p_nl * sin.(dyn.q_nl' * x .- dyn.θ_nl).
-    dyn :: AffineSineForm{T}
+    dyn :: FD
 
     # Port voltage readout:
     # v_out = out.A * x + out.B * v_in(t) +
     #         out.p_nl * sin.(out.q_nl' * x .- dyn.θ_nl).
-    out :: AffineSineForm{T}
+    out :: FO
 
     # Voltage accross each of the resistors
     # used to calculate Joule losses
-    jls :: AffineSineForm{T}
-
+    jls :: FJ
 end
 
 ClassicalEOM(circuit :: Circuit, f₀ :: Frequency) = ClassicalEOM(Float64, circuit, f₀)

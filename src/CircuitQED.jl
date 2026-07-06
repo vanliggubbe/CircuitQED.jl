@@ -12,6 +12,7 @@ import NamedArrays: NamedArray
 
 export uref
 include("utils.jl")
+include("sineform.jl")
 
 export ndof
 export Circuit, ground, add_element!, add_elements!, port_names, ports
